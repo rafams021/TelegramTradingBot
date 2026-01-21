@@ -1,113 +1,62 @@
-import asyncio, time
-from typing import Dict, List
+import asyncio
 from telethon import TelegramClient, events
 
 import config as CFG
 from core import logger
-from core.models import Signal, SplitState
-from core.parser import parse_signal
-from core.rules import decide_execution, tp_reached
+from core.state import BotState
+from core.executor import handle_telegram_message
+from core.watcher import run_watcher
+
 from adapters import mt5_client as mt5c
 
-signals: Dict[int, List[SplitState]] = {}
+
+def _safe_text_sample(text: str, limit: int = 300) -> str:
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    return t[:limit] + "…"
+
 
 async def main():
     mt5c.init()
     acc = mt5c.account_info()
     print("MT5:", acc.login, acc.server, acc.balance)
+    logger.log({"event": "MT5_READY", "login": acc.login, "server": acc.server, "balance": acc.balance})
 
-    logger.log({"event":"MT5_READY","login":acc.login,"server":acc.server,"balance":acc.balance})
+    state = BotState()
 
     client = TelegramClient(CFG.SESSION_NAME, CFG.API_ID, CFG.API_HASH)
     await client.start()
     me = await client.get_me()
     print("Telegram OK:", me.id)
-    logger.log({"event":"TG_READY","user_id":me.id,"channel_id":CFG.CHANNEL_ID})
+    logger.log({"event": "TG_READY", "user_id": me.id, "channel_id": CFG.CHANNEL_ID})
 
     @client.on(events.NewMessage(chats=CFG.CHANNEL_ID))
     async def handler(event):
         text = (event.message.message or "").strip()
         msg_id = event.message.id
+        reply_to = event.message.reply_to_msg_id
+        dt = getattr(event.message, "date", None)
 
-        # -------- BE via reply --------
-        if event.message.reply_to_msg_id and ("BE" in text.upper()):
-            parent = event.message.reply_to_msg_id
-            splits = signals.get(parent, [])
-            logger.log({"event":"BE_DETECTED","reply_to":parent})
+        # ---- Robust Telegram raw message log ----
+        logger.log(
+            {
+                "event": "TG_MESSAGE",
+                "msg_id": msg_id,
+                "reply_to": reply_to,
+                "date": dt.isoformat() if dt else None,
+                "text": _safe_text_sample(text, 300),
+            }
+        )
 
-            for s in splits:
-                if s.status=="OPEN":
-                    req,res = mt5c.modify_sl(s.position_ticket, s.entry)
-                    logger.log({"event":"MOVE_SL_BE","ticket":s.position_ticket,"result":str(res)})
-            return
+        handle_telegram_message(text=text, msg_id=msg_id, reply_to_msg_id=reply_to, state=state)
 
-        sig = parse_signal(text, msg_id)
-        if not sig:
-            return
-
-        # default SL
-        if sig.sl is None:
-            if sig.side=="BUY":
-                sig.sl = sig.entry - CFG.DEFAULT_SL_DISTANCE
-            else:
-                sig.sl = sig.entry + CFG.DEFAULT_SL_DISTANCE
-
-            logger.log({"event":"SL_ASSUMED_DEFAULT","entry":sig.entry,"sl":sig.sl})
-
-        tps = sig.tps[:CFG.MAX_SPLITS]
-        splits: List[SplitState] = []
-
-        tick = mt5c.tick()
-        current_price = tick.ask if sig.side=="BUY" else tick.bid
-
-        mode = decide_execution(sig.side, sig.entry, current_price)
-
-        for i,tp in enumerate(tps):
-            if tp_reached(sig.side,tp,tick.bid,tick.ask):
-                logger.log({"event":"SPLIT_SKIPPED_TP_REACHED","tp":tp})
-                continue
-
-            s = SplitState(sig.message_id,i,sig.entry,tp,sig.sl,"NEW",created_ts=time.time())
-            splits.append(s)
-
-            if mode=="MARKET":
-                req,res = mt5c.send_market(sig.side,CFG.VOLUME,sig.sl,tp)
-                if res and res.retcode==10009:
-                    s.status="OPEN"
-                    s.position_ticket=res.order
-                logger.log({"event":"OPEN_MARKET","split":i,"result":str(res)})
-
-            else:
-                req,res = mt5c.send_pending(sig.side,mode,sig.entry,CFG.VOLUME,sig.sl,tp)
-                if res and res.retcode==10009:
-                    s.status="PENDING"
-                    s.order_ticket=res.order
-                logger.log({"event":"OPEN_PENDING","split":i,"mode":mode,"result":str(res)})
-
-        signals[msg_id] = splits
-
-    async def watcher():
-        while True:
-            await asyncio.sleep(5)
-            now = time.time()
-            tick = mt5c.tick()
-
-            for msg_id,splits in list(signals.items()):
-                for s in splits:
-                    if s.status=="PENDING":
-                        if tp_reached("BUY" if s.entry< s.tp else "SELL", s.tp, tick.bid, tick.ask):
-                            mt5c.cancel_order(s.order_ticket)
-                            s.status="CANCELED"
-                            logger.log({"event":"PENDING_CANCELED_TP","ticket":s.order_ticket})
-
-                        elif now - s.created_ts > CFG.PENDING_TIMEOUT_MIN*60:
-                            mt5c.cancel_order(s.order_ticket)
-                            s.status="CANCELED"
-                            logger.log({"event":"PENDING_CANCELED_TIMEOUT","ticket":s.order_ticket})
-
-    asyncio.create_task(watcher())
+    asyncio.create_task(run_watcher(state))
     print("Bot corriendo...")
     await client.run_until_disconnected()
 
-if __name__=="__main__":
+
+if __name__ == "__main__":
     asyncio.run(main())
+
+

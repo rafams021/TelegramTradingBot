@@ -19,8 +19,19 @@ MAX_DOWN_DRIFT = 1.00   # si precio está debajo del entry (BUY)
 
 DEFAULT_SL_DISTANCE = 50.0  # <- solicitado
 
+# Watcher
+WATCHER_INTERVAL_SEC = 5
+
+# BE policy
+# Extra buffer (en precio) además de stops/freeze level para evitar 10016 en broker.
+BE_EXTRA_BUFFER = 0.10
+
+# Close-at policy
+CLOSE_AT_BUFFER = 0.00
+
 # Logging
 LOG_FILE = "bot_events.jsonl"
 
 # Dry run
 DRY_RUN = False
+
