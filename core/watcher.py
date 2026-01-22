@@ -1,4 +1,5 @@
 import time
+import asyncio
 import config as CFG
 from core import logger
 from core.rules import tp_reached, min_stop_distance, be_allowed, close_at_triggered
@@ -6,11 +7,10 @@ from adapters import mt5_client as mt5c
 from core.state import BotState
 
 
-def _try_attach_filled_position(state: BotState, msg_id: int, split):
+def _try_attach_filled_position(msg_id: int, split) -> bool:
     """
-    Heurística: detectar si un pending order ya se convirtió en posición abierta.
-    Aquí estamos usando posiciones_get(ticket=order_ticket) porque tus logs muestran
-    order_ticket == position_ticket cuando se llena en tu broker/demo.
+    Detecta si un pending order ya se convirtió en posición abierta.
+    En tu broker/demo: order_ticket == position_ticket cuando se llena.
     """
     if not split.order_ticket:
         return False
@@ -23,6 +23,10 @@ def _try_attach_filled_position(state: BotState, msg_id: int, split):
     split.status = "OPEN"
     split.open_price = float(getattr(pos, "price_open", 0.0) or split.entry)
 
+    # --- LOG extra para auditar TP/SL reales al fill ---
+    tp_now = float(getattr(pos, "tp", 0.0) or 0.0)
+    sl_now = float(getattr(pos, "sl", 0.0) or 0.0)
+
     logger.log(
         {
             "event": "PENDING_FILLED_DETECTED",
@@ -31,21 +35,39 @@ def _try_attach_filled_position(state: BotState, msg_id: int, split):
             "order_ticket": split.order_ticket,
             "position_ticket": split.position_ticket,
             "open_price": split.open_price,
+            "tp_pos": tp_now,
+            "sl_pos": sl_now,
+            "tp_expected": float(split.tp),
+            "sl_expected": float(split.sl),
         }
     )
+
+    # --- FIX: si el broker llena sin TP, lo restauramos inmediatamente ---
+    if tp_now <= 0.0 and float(split.tp) > 0.0:
+        req2, res2 = mt5c.modify_sltp(split.position_ticket, new_sl=float(split.sl), new_tp=float(split.tp))
+        logger.log(
+            {
+                "event": "TP_RESTORE_AFTER_FILL",
+                "signal_msg_id": msg_id,
+                "split": split.split_index,
+                "ticket": split.position_ticket,
+                "tp_sent": float(split.tp),
+                "sl_sent": float(split.sl),
+                "result": str(res2),
+            }
+        )
+
     return True
 
 
 async def run_watcher(state: BotState):
-    """
-    Watcher periódico:
-      - cancela pending por TP touched o timeout
-      - aplica BE armado cuando sea permitido (evita invalid stops)
-      - aplica CLOSE_AT armado cuando se dispara
-    """
     while True:
-        await _run_once(state)
-        time.sleep(float(CFG.WATCHER_INTERVAL_SEC))
+        try:
+            await _run_once(state)
+        except Exception as e:
+            # nunca dejamos morir al watcher
+            logger.log({"event": "WATCHER_ERROR", "error": repr(e)})
+        await asyncio.sleep(float(CFG.WATCHER_INTERVAL_SEC))
 
 
 async def _run_once(state: BotState):
@@ -58,13 +80,12 @@ async def _run_once(state: BotState):
 
     now = time.time()
 
-    for msg_id, sig_state in state.signals.items():
-        for s in sig_state.splits:
+    # state.signals: Dict[int, SignalMemory]
+    for msg_id, mem in state.signals.items():
+        for s in mem.splits:
             # ---------- Pending management ----------
             if s.status == "PENDING" and s.order_ticket:
-                # 1) If filled, attach and continue
-                if _try_attach_filled_position(state, msg_id, s):
-                    # if BE was armed while pending, we'll evaluate BE next iteration
+                if _try_attach_filled_position(msg_id, s):
                     pass
                 else:
                     inferred_side = "BUY" if s.entry < s.tp else "SELL"
@@ -130,16 +151,12 @@ async def _run_once(state: BotState):
                         "ask": tick.ask,
                         "min_stop_distance": min_dist,
                         "constraints": constraints,
-                        "tp_current": float(getattr(mt5c.position_get(s.position_ticket), "tp", 0.0) or 0.0)
-                        if mt5c.position_get(s.position_ticket)
-                        else 0.0,
                         "allowed": allowed,
                         "attempt": s.be_attempts,
                     }
                 )
 
                 if allowed:
-                    # Preservar TP: modificar con tp=0.0 lo elimina en MT5
                     pos_now = mt5c.position_get(s.position_ticket)
                     tp_now = float(getattr(pos_now, "tp", 0.0) or 0.0) if pos_now else 0.0
                     tp_fallback = float(s.tp) if getattr(s, "tp", None) is not None else 0.0
@@ -232,4 +249,5 @@ async def _run_once(state: BotState):
                                 "result": str(res),
                             }
                         )
+
 
