@@ -35,5 +35,8 @@ def log(payload: Dict[str, Any]) -> None:
 
 
 def log_event(payload: Dict[str, Any]) -> None:
-    # Backward-compatible alias. No new logic here.
+    """
+    Backward-compatible alias used across the project.
+    IMPORTANT: do NOT duplicate logic; everything funnels into log().
+    """
     log(payload)

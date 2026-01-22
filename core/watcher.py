@@ -1,3 +1,4 @@
+# core/watcher.py
 import time
 import asyncio
 import config as CFG
@@ -27,7 +28,7 @@ def _try_attach_filled_position(msg_id: int, split) -> bool:
     tp_now = float(getattr(pos, "tp", 0.0) or 0.0)
     sl_now = float(getattr(pos, "sl", 0.0) or 0.0)
 
-    logger.log(
+    logger.log_event(
         {
             "event": "PENDING_FILLED_DETECTED",
             "signal_msg_id": msg_id,
@@ -45,7 +46,7 @@ def _try_attach_filled_position(msg_id: int, split) -> bool:
     # --- FIX: si el broker llena sin TP, lo restauramos inmediatamente ---
     if tp_now <= 0.0 and float(split.tp) > 0.0:
         req2, res2 = mt5c.modify_sltp(split.position_ticket, new_sl=float(split.sl), new_tp=float(split.tp))
-        logger.log(
+        logger.log_event(
             {
                 "event": "TP_RESTORE_AFTER_FILL",
                 "signal_msg_id": msg_id,
@@ -66,8 +67,8 @@ async def run_watcher(state: BotState):
             await _run_once(state)
         except Exception as e:
             # nunca dejamos morir al watcher
-            logger.log({"event": "WATCHER_ERROR", "error": repr(e)})
-        await asyncio.sleep(float(CFG.WATCHER_INTERVAL_SEC))
+            logger.log_event({"event": "WATCHER_ERROR", "error": repr(e)})
+        await asyncio.sleep(float(getattr(CFG, "WATCHER_INTERVAL_SEC", 1.0) or 1.0))
 
 
 async def _run_once(state: BotState):
@@ -79,8 +80,8 @@ async def _run_once(state: BotState):
     min_dist = min_stop_distance(constraints, float(getattr(CFG, "BE_EXTRA_BUFFER", 0.0) or 0.0))
 
     now = time.time()
+    vol = float(getattr(CFG, "VOLUME_PER_ORDER", 0.01) or 0.01)
 
-    # state.signals: Dict[int, SignalMemory]
     for msg_id, mem in state.signals.items():
         for s in mem.splits:
             # ---------- Pending management ----------
@@ -89,12 +90,12 @@ async def _run_once(state: BotState):
                     pass
                 else:
                     inferred_side = "BUY" if s.entry < s.tp else "SELL"
-                    age_s = now - s.created_ts
+                    age_s = now - (getattr(s, "created_ts", now) or now)
 
                     if tp_reached(inferred_side, s.tp, tick.bid, tick.ask):
                         req, res = mt5c.cancel_order(s.order_ticket)
                         s.status = "CANCELED"
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "PENDING_CANCELED_TP",
                                 "signal_msg_id": msg_id,
@@ -108,10 +109,10 @@ async def _run_once(state: BotState):
                                 "result": str(res),
                             }
                         )
-                    elif age_s > CFG.PENDING_TIMEOUT_MIN * 60:
+                    elif age_s > float(getattr(CFG, "PENDING_TIMEOUT_MIN", 10) or 10) * 60.0:
                         req, res = mt5c.cancel_order(s.order_ticket)
                         s.status = "CANCELED"
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "PENDING_CANCELED_TIMEOUT",
                                 "signal_msg_id": msg_id,
@@ -139,7 +140,7 @@ async def _run_once(state: BotState):
 
                 allowed = be_allowed(s.side, be_price, float(tick.bid), float(tick.ask), min_dist)
 
-                logger.log(
+                logger.log_event(
                     {
                         "event": "BE_APPLY_ATTEMPT",
                         "signal_msg_id": msg_id,
@@ -167,11 +168,11 @@ async def _run_once(state: BotState):
                         fallback_tp=(tp_now if tp_now > 0.0 else tp_fallback),
                     )
 
-                    if res and res.retcode == 10009:
+                    if res and getattr(res, "retcode", None) == 10009:
                         s.be_done = True
                         s.be_armed = False
                         s.be_applied_ts = time.time()
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "BE_APPLIED",
                                 "signal_msg_id": msg_id,
@@ -183,7 +184,7 @@ async def _run_once(state: BotState):
                             }
                         )
                     else:
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "BE_APPLY_FAILED",
                                 "signal_msg_id": msg_id,
@@ -206,7 +207,7 @@ async def _run_once(state: BotState):
                     buffer=float(getattr(CFG, "CLOSE_AT_BUFFER", 0.0) or 0.0),
                 )
 
-                logger.log(
+                logger.log_event(
                     {
                         "event": "CLOSE_AT_CHECK",
                         "signal_msg_id": msg_id,
@@ -222,13 +223,13 @@ async def _run_once(state: BotState):
                 )
 
                 if trig:
-                    req, res = mt5c.close_position(s.position_ticket, s.side, CFG.VOLUME)
-                    if res and res.retcode == 10009:
+                    req, res = mt5c.close_position(s.position_ticket, s.side, vol)
+                    if res and getattr(res, "retcode", None) == 10009:
                         s.close_done = True
                         s.close_armed = False
                         s.close_applied_ts = time.time()
                         s.status = "CLOSED"
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "CLOSE_AT_APPLIED",
                                 "signal_msg_id": msg_id,
@@ -239,7 +240,7 @@ async def _run_once(state: BotState):
                             }
                         )
                     else:
-                        logger.log(
+                        logger.log_event(
                             {
                                 "event": "CLOSE_AT_FAILED",
                                 "signal_msg_id": msg_id,
