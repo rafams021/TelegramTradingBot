@@ -1,10 +1,10 @@
 # config.py
 
 # Telegram API credentials
-API_ID = 0
-API_HASH = ""
+API_ID = 32919258
+API_HASH = "dfb662cee66fe7b2f337628eeac3316c"
 SESSION_NAME = "tg_session_qr"
-CHANNEL_ID = 0  # channel/chat id (int)
+CHANNEL_ID = 2329472075  # channel/chat id (int)
 
 # MT5 account
 MT5_LOGIN = 1022962
