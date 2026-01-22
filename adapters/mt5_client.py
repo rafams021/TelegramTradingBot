@@ -62,11 +62,13 @@ def open_market(side: str, volume: float, sl: float, tp: float):
     tick = symbol_tick()
     if not tick:
         return None, None
+
     side_u = (side or "").upper().strip()
     order_type = mt5.ORDER_TYPE_BUY if side_u == "BUY" else mt5.ORDER_TYPE_SELL
     price = float(tick.ask) if side_u == "BUY" else float(tick.bid)
 
-    req = {
+    # MARKET: primero IOC (evita 10030), fallback RETURN
+    base_req = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": CFG.SYMBOL,
         "volume": float(volume),
@@ -77,12 +79,31 @@ def open_market(side: str, volume: float, sl: float, tp: float):
         "deviation": int(CFG.DEVIATION),
         "magic": int(CFG.MAGIC),
         "comment": "TG_BOT",
-        "type_filling": mt5.ORDER_FILLING_RETURN,
     }
-    if CFG.DRY_RUN:
-        return req, None
-    res = mt5.order_send(req)
-    return req, res
+
+    filling_try = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
+    last_req = None
+    last_res = None
+
+    for fill in filling_try:
+        req = dict(base_req)
+        req["type_filling"] = fill
+        last_req = req
+
+        if CFG.DRY_RUN:
+            return req, None
+
+        res = mt5.order_send(req)
+        last_res = res
+
+        ret = int(getattr(res, "retcode", 0) or 0)
+        if ret == 10009:
+            return req, res
+        if ret == 10030:
+            continue
+        break
+
+    return last_req, last_res
 
 
 def open_pending(side: str, mode: str, volume: float, price: float, sl: float, tp: float):
