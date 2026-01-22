@@ -14,8 +14,26 @@ MAGIC = 6069104329
 MAX_SPLITS = 10
 PENDING_TIMEOUT_MIN = 60
 
-MAX_UP_DRIFT = 0.30     # si precio se fue arriba del entry (BUY)
-MAX_DOWN_DRIFT = 1.00   # si precio está debajo del entry (BUY)
+# --- Entry execution policy (drift/tolerance) ---
+# Definición:
+#   delta = current_price - entry
+#   current_price: BUY usa ASK, SELL usa BID.
+#
+# Guardrail duro:
+#   si abs(delta) > HARD_DRIFT => SKIP (no operar; demasiado lejos del entry).
+HARD_DRIFT = 10.0
+
+# Tolerancias asimétricas para permitir MARKET; si se sale del "colchón" => LIMIT (esperar pullback).
+# BUY:
+BUY_UP_TOL = 0.30      # precio ARRIBA del entry permitido para BUY MARKET (delta > 0)
+BUY_DOWN_TOL = 1.00    # precio ABAJO del entry permitido para BUY MARKET (delta < 0)
+# SELL:
+SELL_DOWN_TOL = 0.30   # precio ABAJO del entry permitido para SELL MARKET (delta < 0)
+SELL_UP_TOL = 1.00     # precio ARRIBA del entry permitido para SELL MARKET (delta > 0)
+
+# Backwards-compat (si algo viejo lo usa); NO usar para lógica nueva
+MAX_UP_DRIFT = BUY_UP_TOL
+MAX_DOWN_DRIFT = BUY_DOWN_TOL
 
 DEFAULT_SL_DISTANCE = 50.0  # <- solicitado
 

@@ -2,61 +2,72 @@ import asyncio
 from telethon import TelegramClient, events
 
 import config as CFG
-from core import logger
-from core.state import BotState
-from core.executor import handle_telegram_message
-from core.watcher import run_watcher
-
 from adapters import mt5_client as mt5c
-
-
-def _safe_text_sample(text: str, limit: int = 300) -> str:
-    t = (text or "").strip()
-    if len(t) <= limit:
-        return t
-    return t[:limit] + "…"
+from core import logger
+from core.executor import handle_signal
+from core.management import classify_management
+from core.state import BOT_STATE
+from core.watcher import run_watcher
+from core.utils import safe_text_sample
 
 
 async def main():
-    mt5c.init()
-    acc = mt5c.account_info()
-    print("MT5:", acc.login, acc.server, acc.balance)
-    logger.log({"event": "MT5_READY", "login": acc.login, "server": acc.server, "balance": acc.balance})
+    # MT5 init
+    ok = mt5c.init()
+    if not ok:
+        logger.log({"event": "MT5_INIT_FAILED"})
+        return
+    logger.log(
+        {
+            "event": "MT5_READY",
+            "login": mt5c.account_login(),
+            "server": mt5c.account_server(),
+            "balance": mt5c.account_balance(),
+        }
+    )
 
-    state = BotState()
+    # Telegram init
+    tg = TelegramClient(CFG.SESSION_NAME, CFG.API_ID, CFG.API_HASH)
+    await tg.start()
+    logger.log({"event": "TG_READY", "user_id": "unknown", "channel_id": CFG.CHANNEL_ID})
 
-    client = TelegramClient(CFG.SESSION_NAME, CFG.API_ID, CFG.API_HASH)
-    await client.start()
-    me = await client.get_me()
-    print("Telegram OK:", me.id)
-    logger.log({"event": "TG_READY", "user_id": me.id, "channel_id": CFG.CHANNEL_ID})
+    # Start watcher (BE pending, pending fills, etc.)
+    asyncio.create_task(run_watcher(BOT_STATE))
 
-    @client.on(events.NewMessage(chats=CFG.CHANNEL_ID))
-    async def handler(event):
-        text = (event.message.message or "").strip()
-        msg_id = event.message.id
-        reply_to = event.message.reply_to_msg_id
-        dt = getattr(event.message, "date", None)
+    @tg.on(events.NewMessage(chats=CFG.CHANNEL_ID))
+    async def on_message(event):
+        msg = event.message
+        text = msg.message or ""
+        reply_to = msg.reply_to_msg_id if msg.reply_to else None
 
-        # ---- Robust Telegram raw message log ----
         logger.log(
             {
                 "event": "TG_MESSAGE",
-                "msg_id": msg_id,
+                "msg_id": msg.id,
                 "reply_to": reply_to,
-                "date": dt.isoformat() if dt else None,
-                "text": _safe_text_sample(text, 300),
+                "date": msg.date.isoformat() if msg.date else None,
+                "text": safe_text_sample(text, 300),
             }
         )
 
-        handle_telegram_message(text=text, msg_id=msg_id, reply_to_msg_id=reply_to, state=state)
+        # 1) Management messages (BE / CLOSE / etc)
+        mg = classify_management(text)
+        if mg.kind != "NONE":
+            # management is handled by watcher (armed flags)
+            # but we need to link mg to state here
+            from core.management import apply_management
 
-    asyncio.create_task(run_watcher(state))
-    print("Bot corriendo...")
-    await client.run_until_disconnected()
+            apply_management(BOT_STATE, msg_id=msg.id, reply_to=reply_to, mg=mg)
+            return
+
+        # 2) Signal messages
+        await handle_signal(BOT_STATE, msg_id=msg.id, text=text)
+
+    await tg.run_until_disconnected()
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
