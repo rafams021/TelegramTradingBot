@@ -10,3 +10,7 @@ timeout /t 25 /nobreak >nul
 echo [3/3] Starting TelegramTradingBot...
 cd /d "C:\Users\Robo\TelegramTradingBot"
 python "C:\Users\Robo\TelegramTradingBot\main.py"
+
+echo.
+echo Bot finished (or crashed). Press any key to close.
+pause >nul
