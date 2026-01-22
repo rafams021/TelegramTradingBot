@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -13,6 +14,28 @@ def iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _safe_print(line: str) -> None:
+    """
+    Windows console can be cp1252 and crash on emojis/special chars.
+    Never let logging crash the bot.
+    """
+    try:
+        print(line, flush=True)
+        return
+    except UnicodeEncodeError:
+        # Fallback: write bytes with replacement
+        try:
+            enc = (sys.stdout.encoding or "utf-8")
+            data = (line + "\n").encode(enc, errors="backslashreplace")
+            sys.stdout.buffer.write(data)
+            sys.stdout.flush()
+        except Exception:
+            # last resort: ignore stdout completely
+            pass
+    except Exception:
+        pass
+
+
 def log(payload: Dict[str, Any]) -> None:
     # Ensure timestamp
     if "ts" not in payload:
@@ -20,10 +43,10 @@ def log(payload: Dict[str, Any]) -> None:
 
     line = json.dumps(payload, ensure_ascii=False)
 
-    # stdout (console)
-    print(line, flush=True)
+    # stdout (never crash)
+    _safe_print(line)
 
-    # file (project root)
+    # file (project root) - UTF-8, safe
     try:
         root = os.path.dirname(os.path.dirname(__file__))
         path = os.path.join(root, config.LOG_FILE)
@@ -35,8 +58,5 @@ def log(payload: Dict[str, Any]) -> None:
 
 
 def log_event(payload: Dict[str, Any]) -> None:
-    """
-    Backward-compatible alias used across the project.
-    IMPORTANT: do NOT duplicate logic; everything funnels into log().
-    """
+    # Backward-compatible alias
     log(payload)
