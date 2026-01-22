@@ -1,3 +1,4 @@
 *.pyc
 bot_events.jsonl
 bot_events.jsonl
+*.log
