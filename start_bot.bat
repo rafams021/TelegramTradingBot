@@ -9,8 +9,11 @@ timeout /t 25 /nobreak >nul
 
 echo [3/3] Starting TelegramTradingBot...
 cd /d "C:\Users\Robo\TelegramTradingBot"
-python "C:\Users\Robo\TelegramTradingBot\main.py"
+
+python -u "C:\Users\Robo\TelegramTradingBot\main.py" 1>>stdout.log 2>>stderr.log
 
 echo.
-echo Bot finished (or crashed). Press any key to close.
-pause >nul
+echo Bot finished (or crashed). Check:
+echo   - bot_events.jsonl
+echo   - stderr.log
+pause

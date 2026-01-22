@@ -6,7 +6,7 @@ import config as CFG
 def init() -> bool:
     if not mt5.initialize():
         return False
-    mt5.login(CFG.LOGIN, CFG.PASSWORD, CFG.SERVER) if hasattr(CFG, "LOGIN") else None
+    mt5.login(CFG.MT5_LOGIN, CFG.MT5_PASSWORD, CFG.MT5_SERVER) if hasattr(CFG, "LOGIN") else None
     return True
 
 

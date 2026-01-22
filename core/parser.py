@@ -1,106 +1,76 @@
+# core/parser.py
+from __future__ import annotations
+
 import re
-from typing import Optional, List
+from typing import List, Optional
+
 from core.models import Signal
 
-# ---- Helpers regex ----
+_SYMBOL_RE = re.compile(r"\bXAUUSD\b", re.I)
+_BUY_RE = re.compile(r"\bBUY\b", re.I)
+_SELL_RE = re.compile(r"\bSELL\b", re.I)
 
-# "XAUUSD BUY 4832"
-re_symbol_side_entry = re.compile(r"\bXAUUSD\b\s*(?:\|\s*)?(BUY|SELL)\b[^\d]*(\d+(?:\.\d+)?)", re.IGNORECASE)
-
-# "BUY XAUUSD 4827"
-re_side_symbol_entry = re.compile(r"\b(BUY|SELL)\b\s+XAUUSD\b[^\d]*(\d+(?:\.\d+)?)", re.IGNORECASE)
-
-# "SELL @ 4832" / "SELL 4832" / "SELL AT 4832"
-re_side_entry_line = re.compile(r"\b(BUY|SELL)\b\s*(?:@|AT)?\s*(\d+(?:\.\d+)?)\b", re.IGNORECASE)
-
-# "ENTRY: 4832" / "ENTRY=4832"
-re_open_entry = re.compile(r"\bENTRY\b\s*[:=]?\s*(\d+(?:\.\d+)?)\b", re.IGNORECASE)
-
-# "SL: 4844" / "SL 4844" / "SL=4844"
-re_sl = re.compile(r"\bSL\b\s*[:=]?\s*(\d+(?:\.\d+)?)\b", re.IGNORECASE)
-
-# "TP1:4830" / "TP 4835" / "TP2 = 4825"
-re_tp = re.compile(r"\bTP\d*\b\s*[:=]?\s*(\d+(?:\.\d+)?)\b", re.IGNORECASE)
-
-# "TP3: open" / "TP open" (no numérico) -> se ignora por definición
-re_tp_open = re.compile(r"\bTP\d*\b\s*[:=]?\s*open\b", re.IGNORECASE)
-
-# Header para side sin entry: "XAUUSD | SELL NOW" / "XAUUSD SELL NOW"
-re_header_side = re.compile(r"\bXAUUSD\b.*\b(BUY|SELL)\b", re.IGNORECASE)
+_NUM_RE = re.compile(r"(\d+(?:\.\d+)?)")
+_TP_RE = re.compile(r"\bTP\s*\d*\s*[:\s]+(\d+(?:\.\d+)?)", re.I)
+_SL_RE = re.compile(r"\bSL\s*[:\s]+(\d+(?:\.\d+)?)", re.I)
 
 
-def _dedup_preserve_order(values: List[float]) -> List[float]:
-    seen = set()
-    out: List[float] = []
-    for v in values:
-        if v in seen:
-            continue
-        seen.add(v)
-        out.append(v)
-    return out
+def _extract_entry(text: str) -> Optional[float]:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    for line in lines:
+        # If side word is typo (BIU), we still have symbol line with number
+        if _BUY_RE.search(line) or _SELL_RE.search(line) or _SYMBOL_RE.search(line):
+            nums = _NUM_RE.findall(line)
+            if nums:
+                return float(nums[-1])
+    m = _NUM_RE.search(text)
+    return float(m.group(1)) if m else None
 
 
-def parse_signal(text: str, msg_id: int) -> Optional[Signal]:
-    t = (text or "").strip()
-    if not t:
+def _infer_side(entry: float, sl: float, tps: List[float]) -> Optional[str]:
+    """
+    Heurística para casos tipo "BIU":
+      BUY  -> TP promedio > entry y SL < entry
+      SELL -> TP promedio < entry y SL > entry
+    """
+    if not tps:
+        return None
+    tp_avg = sum(tps) / float(len(tps))
+
+    if tp_avg > entry and sl < entry:
+        return "BUY"
+    if tp_avg < entry and sl > entry:
+        return "SELL"
+    return None
+
+
+def parse_signal(msg_id: int, text: str) -> Optional[Signal]:
+    t = text.strip()
+    if not _SYMBOL_RE.search(t):
         return None
 
-    up = t.upper()
-    # Seguridad: solo intentamos parsear señales de XAUUSD
-    if "XAUUSD" not in up:
+    sl_m = _SL_RE.search(t)
+    if not sl_m:
+        return None
+    sl = float(sl_m.group(1))
+
+    tps = [float(x) for x in _TP_RE.findall(t)]
+    if not tps:
+        return None
+
+    entry = _extract_entry(t)
+    if entry is None:
         return None
 
     side: Optional[str] = None
-    entry: Optional[float] = None
+    if _BUY_RE.search(t):
+        side = "BUY"
+    elif _SELL_RE.search(t):
+        side = "SELL"
+    else:
+        side = _infer_side(entry=entry, sl=sl, tps=tps)
 
-    # 1) Extraer side (aunque sea del header)
-    mh = re_header_side.search(t)
-    if mh:
-        side = mh.group(1).upper()
-
-    # 2) Extraer side + entry con patrones más específicos primero
-    m = re_symbol_side_entry.search(t)
-    if m:
-        side = (side or m.group(1)).upper()
-        entry = float(m.group(2))
-
-    if entry is None:
-        m = re_side_symbol_entry.search(t)
-        if m:
-            side = (side or m.group(1)).upper()
-            entry = float(m.group(2))
-
-    # 3) ENTRY explícito (si viene)
-    m2 = re_open_entry.search(t)
-    if m2:
-        entry = float(m2.group(1))
-
-    # 4) Línea "BUY/SELL @ 4832" / "SELL AT 4832"
-    if entry is None:
-        m3 = re_side_entry_line.search(t)
-        if m3:
-            side = (side or m3.group(1)).upper()
-            entry = float(m3.group(2))
-
-    if not side or entry is None:
-        return None
-
-    # SL (opcional, el default SL se decide fuera)
-    sl = None
-    msl = re_sl.search(t)
-    if msl:
-        sl = float(msl.group(1))
-
-    # Ignorar TP open (no numérico)
-    # (No hace falta remover nada: re_tp solo toma numéricos)
-    _ = re_tp_open.search(t)
-
-    # TP numéricos
-    tps = [float(x) for x in re_tp.findall(t)]
-    tps = _dedup_preserve_order(tps)
-
-    # Reglas del bot: si no hay TPs numéricos, no es señal válida
-    if not tps:
+    if side not in ("BUY", "SELL"):
         return None
 
     return Signal(message_id=msg_id, side=side, entry=entry, sl=sl, tps=tps)

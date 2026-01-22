@@ -1,54 +1,43 @@
-# Telegram
-API_ID = 32919258
-API_HASH = "dfb662cee66fe7b2f337628eeac3316c"
+# config.py
+
+# Telegram API credentials
+API_ID = 0
+API_HASH = ""
 SESSION_NAME = "tg_session_qr"
-CHANNEL_ID = 2329472075
+CHANNEL_ID = 0  # channel/chat id (int)
 
-# Trading
+# MT5 account
+MT5_LOGIN = 1022962
+MT5_PASSWORD = ""
+MT5_SERVER = "VTMarkets-Demo"
+
+# Trading settings
 SYMBOL = "XAUUSD-ECN"
-VOLUME = 0.05
+VOLUME_PER_ORDER = 0.05
 DEVIATION = 50
-MAGIC = 6069104329
+MAGIC = 6069104329  # ideally TG user_id
 
-# Risk / policy
-MAX_SPLITS = 10
-PENDING_TIMEOUT_MIN = 60
+# Execution drift policy (price units; XAUUSD-ECN usually 2 digits => 0.30 == $0.30)
+BUY_UP_TOL = 0.30
+BUY_DOWN_TOL = 1.00
+SELL_DOWN_TOL = 0.30
+SELL_UP_TOL = 1.00
 
-# --- Entry execution policy (drift/tolerance) ---
-# Definición:
-#   delta = current_price - entry
-#   current_price: BUY usa ASK, SELL usa BID.
-#
-# Guardrail duro:
-#   si abs(delta) > HARD_DRIFT => SKIP (no operar; demasiado lejos del entry).
+# Extra safety hard cap
 HARD_DRIFT = 10.0
 
-# Tolerancias asimétricas para permitir MARKET; si se sale del "colchón" => LIMIT (esperar pullback).
-# BUY:
-BUY_UP_TOL = 0.30      # precio ARRIBA del entry permitido para BUY MARKET (delta > 0)
-BUY_DOWN_TOL = 1.00    # precio ABAJO del entry permitido para BUY MARKET (delta < 0)
-# SELL:
-SELL_DOWN_TOL = 0.30   # precio ABAJO del entry permitido para SELL MARKET (delta < 0)
-SELL_UP_TOL = 1.00     # precio ARRIBA del entry permitido para SELL MARKET (delta > 0)
+# Optional extra cushion (available if you want to use it in rules.py)
+EXTRA_SLIPPAGE = 0.10
 
-# Backwards-compat (si algo viejo lo usa); NO usar para lógica nueva
-MAX_UP_DRIFT = BUY_UP_TOL
-MAX_DOWN_DRIFT = BUY_DOWN_TOL
+# Break-even buffer
+BE_BUFFER = 0.0
 
-DEFAULT_SL_DISTANCE = 50.0  # <- solicitado
-
-# Watcher
-WATCHER_INTERVAL_SEC = 5
-
-# BE policy
-# Extra buffer (en precio) además de stops/freeze level para evitar 10016 en broker.
-BE_EXTRA_BUFFER = 0.10
-
-# Close-at policy
-CLOSE_AT_BUFFER = 0.00
+# Telegram edit handling (typos -> quick edits)
+TG_EDIT_REPROCESS_WINDOW_S = 180
+TG_EDIT_REPROCESS_MAX_ATTEMPTS = 3
 
 # Logging
-LOG_FILE = "bot_events.jsonl"
+LOG_FILE = "bot_events.jsonl"  # written in project root
 
 # Dry run
 DRY_RUN = False
