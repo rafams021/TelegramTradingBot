@@ -9,10 +9,14 @@ from typing import Any, Dict
 import config
 
 
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def log(payload: Dict[str, Any]) -> None:
     # Ensure timestamp
     if "ts" not in payload:
-        payload["ts"] = datetime.now(timezone.utc).isoformat()
+        payload["ts"] = iso_now()
 
     line = json.dumps(payload, ensure_ascii=False)
 
@@ -29,3 +33,7 @@ def log(payload: Dict[str, Any]) -> None:
         # never crash due to logging
         pass
 
+
+def log_event(payload: Dict[str, Any]) -> None:
+    # Backward-compatible alias. No new logic here.
+    log(payload)
