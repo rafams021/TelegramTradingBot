@@ -1,45 +1,56 @@
 @echo off
 setlocal ENABLEEXTENSIONS
 
-REM =========================
-REM Broker selector
-REM =========================
-REM DEMO = VT Markets
-REM REAL = RoboForex
-set BROKER=DEMO
+set "LOG=%~dp0launcher.log"
+echo ==== %date% %time% ==== > "%LOG%"
 
-if "%BROKER%"=="REAL" (
-    set MT5_PATH=C:\Program Files\RoboForex MT5 Terminal\terminal64.exe
-) else (
-    set MT5_PATH=C:\Program Files\VT Markets (Pty) MT5 Terminal\terminal64.exe
-)
-
-echo Using broker: %BROKER%
-echo MT5 path: %MT5_PATH%
+set "BROKER=DEMO"
+echo BROKER=%BROKER%
+echo BROKER=%BROKER%>>"%LOG%"
 echo.
 
-REM =========================
-REM Start MetaTrader 5
-REM =========================
+if /I "%BROKER%"=="REAL" (
+    set "MT5_PATH=C:\Program Files\RoboForex MT5 Terminal\terminal64.exe"
+) else (
+    set "MT5_PATH=C:\Program Files\VT Markets (Pty) MT5 Terminal\terminal64.exe"
+)
+
+echo MT5_PATH=%MT5_PATH%
+echo MT5_PATH=%MT5_PATH%>>"%LOG%"
+echo.
+
+if not exist "%MT5_PATH%" (
+    echo ERROR: MT5 terminal not found:
+    echo   "%MT5_PATH%"
+    echo ERROR: MT5 terminal not found: "%MT5_PATH%">>"%LOG%"
+    pause
+    exit /b 1
+)
+
 echo [1/3] Starting MetaTrader 5...
+echo [1/3] Starting MetaTrader 5...>>"%LOG%"
 start "" "%MT5_PATH%"
 
 echo [2/3] Waiting for MT5 to initialize...
+echo [2/3] Waiting for MT5 to initialize...>>"%LOG%"
 timeout /t 25 /nobreak >nul
 
-REM =========================
-REM Start TelegramTradingBot
-REM =========================
 echo [3/3] Starting TelegramTradingBot...
-cd /d "C:\Users\Robo\TelegramTradingBot"
+echo [3/3] Starting TelegramTradingBot...>>"%LOG%"
 
-python -u "C:\Users\Robo\TelegramTradingBot\main.py" ^
-    1>>stdout.log ^
-    2>>stderr.log
+set "BOT_DIR=C:\Users\Robo\TelegramTradingBot"
+set "BOT_MAIN=%BOT_DIR%\main.py"
 
-echo.
-echo Bot finished (or crashed). Check:
-echo   - bot_events.jsonl
-echo   - stdout.log
-echo   - stderr.log
+if not exist "%BOT_MAIN%" (
+    echo ERROR: main.py not found:
+    echo   "%BOT_MAIN%"
+    echo ERROR: main.py not found: "%BOT_MAIN%">>"%LOG%"
+    pause
+    exit /b 1
+)
+
+cd /d "%BOT_DIR%"
+python -u "%BOT_MAIN%" 1>>stdout.log 2>>stderr.log
+
+echo Exit code: %ERRORLEVEL%>>"%LOG%"
 pause
