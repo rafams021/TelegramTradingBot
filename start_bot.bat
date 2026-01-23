@@ -38,7 +38,12 @@ timeout /t 25 /nobreak >nul
 echo [3/3] Starting TelegramTradingBot...
 echo [3/3] Starting TelegramTradingBot...>>"%LOG%"
 
-set "BOT_DIR=C:\Users\Robo\TelegramTradingBot"
+if /I "%BROKER%"=="REAL" (
+    set "BOT_DIR=C:\Users\Robo\TelegramTradingBotReal"
+) else (
+    set "BOT_DIR=C:\Users\Robo\TelegramTradingBot"
+)
+
 set "BOT_MAIN=%BOT_DIR%\main.py"
 
 if not exist "%BOT_MAIN%" (
