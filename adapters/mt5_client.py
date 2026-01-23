@@ -2,11 +2,215 @@ import time
 import MetaTrader5 as mt5
 import config as CFG
 
+# Import logger safely (project layout can vary)
+try:
+    from core import logger
+except Exception:
+    try:
+        import logger  # fallback if logger.py is at project root
+    except Exception:
+        logger = None
 
-def init() -> bool:
+
+# -------------------------
+# Internal state (no duplication)
+# -------------------------
+_MT5_READY = False
+_SYMBOL_READY = False
+_SYMBOL_READY_NAME = None
+
+
+def _log(payload: dict) -> None:
+    """Never crash if logger is unavailable."""
+    if logger is None:
+        return
+    try:
+        logger.log_event(payload)
+    except Exception:
+        pass
+
+
+def _last_error() -> dict:
+    """MT5 last_error() helper, never crash."""
+    try:
+        e = mt5.last_error()
+        # MT5 returns tuple (code, description) in many builds
+        if isinstance(e, tuple) and len(e) >= 2:
+            return {"code": int(e[0]), "desc": str(e[1])}
+        return {"code": None, "desc": str(e)}
+    except Exception as ex:
+        return {"code": None, "desc": f"last_error_exception: {ex}"}
+
+
+def _ensure_mt5_ready() -> bool:
+    """
+    Ensure MT5 is initialized AND logged in.
+    This is intentionally centralized to avoid duplicate logic.
+    """
+    global _MT5_READY
+
+    if _MT5_READY:
+        return True
+
     if not mt5.initialize():
+        _log(
+            {
+                "event": "MT5_INIT_FAILED_INTERNAL",
+                "server": getattr(CFG, "MT5_SERVER", None),
+                "login": getattr(CFG, "MT5_LOGIN", None),
+                "last_error": _last_error(),
+            }
+        )
         return False
-    mt5.login(CFG.MT5_LOGIN, CFG.MT5_PASSWORD, CFG.MT5_SERVER) if hasattr(CFG, "LOGIN") else None
+
+    # Always attempt login (fixes previous bug: hasattr(CFG, "LOGIN") was wrong)
+    login = getattr(CFG, "MT5_LOGIN", None)
+    password = getattr(CFG, "MT5_PASSWORD", None)
+    server = getattr(CFG, "MT5_SERVER", None)
+
+    ok_login = False
+    try:
+        ok_login = bool(mt5.login(int(login), str(password), str(server)))
+    except Exception as ex:
+        _log(
+            {
+                "event": "MT5_LOGIN_EXCEPTION",
+                "login": login,
+                "server": server,
+                "error": str(ex),
+                "last_error": _last_error(),
+            }
+        )
+        ok_login = False
+
+    if not ok_login:
+        _log(
+            {
+                "event": "MT5_LOGIN_FAILED",
+                "login": login,
+                "server": server,
+                "last_error": _last_error(),
+            }
+        )
+        return False
+
+    # Confirm account_info is accessible after login
+    try:
+        info = mt5.account_info()
+        _log(
+            {
+                "event": "MT5_LOGIN_OK",
+                "login": getattr(info, "login", login) if info else login,
+                "server": getattr(info, "server", server) if info else server,
+            }
+        )
+    except Exception:
+        # Not fatal, but log it
+        _log({"event": "MT5_ACCOUNT_INFO_UNAVAILABLE", "last_error": _last_error()})
+
+    _MT5_READY = True
+    return True
+
+
+def _ensure_symbol_ready(force: bool = False) -> bool:
+    """
+    Ensure the trading symbol exists and is selected in this MT5 Python session.
+    Centralized to avoid duplicating select logic across tick/order functions.
+    """
+    global _SYMBOL_READY, _SYMBOL_READY_NAME
+
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
+    if not sym:
+        _SYMBOL_READY = False
+        _SYMBOL_READY_NAME = None
+        _log({"event": "MT5_SYMBOL_EMPTY"})
+        return False
+
+    if not _ensure_mt5_ready():
+        _SYMBOL_READY = False
+        _SYMBOL_READY_NAME = None
+        return False
+
+    if _SYMBOL_READY and _SYMBOL_READY_NAME == sym and not force:
+        return True
+
+    # Check symbol info first
+    info = None
+    try:
+        info = mt5.symbol_info(sym)
+    except Exception:
+        info = None
+
+    if not info:
+        _SYMBOL_READY = False
+        _SYMBOL_READY_NAME = None
+        _log(
+            {
+                "event": "MT5_SYMBOL_INFO_MISSING",
+                "symbol": sym,
+                "last_error": _last_error(),
+            }
+        )
+        return False
+
+    # Ensure it's selected for this session
+    ok_select = False
+    try:
+        ok_select = bool(mt5.symbol_select(sym, True))
+    except Exception as ex:
+        _log(
+            {
+                "event": "MT5_SYMBOL_SELECT_EXCEPTION",
+                "symbol": sym,
+                "error": str(ex),
+                "last_error": _last_error(),
+            }
+        )
+        ok_select = False
+
+    if not ok_select:
+        _SYMBOL_READY = False
+        _SYMBOL_READY_NAME = None
+        _log(
+            {
+                "event": "MT5_SYMBOL_SELECT_FAILED",
+                "symbol": sym,
+                "visible": bool(getattr(info, "visible", False)),
+                "trade_mode": int(getattr(info, "trade_mode", -1) or -1),
+                "last_error": _last_error(),
+            }
+        )
+        return False
+
+    _SYMBOL_READY = True
+    _SYMBOL_READY_NAME = sym
+
+    _log(
+        {
+            "event": "MT5_SYMBOL_READY",
+            "symbol": sym,
+            "digits": int(getattr(info, "digits", 0) or 0),
+            "point": float(getattr(info, "point", 0.0) or 0.0),
+            "trade_mode": int(getattr(info, "trade_mode", -1) or -1),
+            "visible": bool(getattr(info, "visible", False)),
+        }
+    )
+    return True
+
+
+# -------------------------
+# Public API (used by executor/watcher)
+# -------------------------
+def init() -> bool:
+    """
+    Called by main.py.
+    Ensures MT5 init + login + symbol selection.
+    """
+    if not _ensure_mt5_ready():
+        return False
+
+    # Selecting symbol here helps avoid tick missing later
+    _ensure_symbol_ready(force=True)
     return True
 
 
@@ -26,11 +230,37 @@ def account_balance():
 
 
 def symbol_tick():
-    return mt5.symbol_info_tick(CFG.SYMBOL)
+    """
+    Return MT5 tick for CFG.SYMBOL.
+    Adds robust selection + tiny retry to avoid transient None in REAL.
+    """
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
+
+    if not _ensure_symbol_ready():
+        _log({"event": "MT5_TICK_MISSING_DIAG", "symbol": sym, "reason": "symbol_not_ready", "last_error": _last_error()})
+        return None
+
+    # Retry a bit: real feeds can return None momentarily even with selection OK
+    retries = 3
+    delay_s = 0.20
+    last = None
+    for i in range(retries):
+        try:
+            last = mt5.symbol_info_tick(sym)
+        except Exception:
+            last = None
+
+        if last is not None:
+            return last
+        time.sleep(delay_s)
+
+    _log({"event": "MT5_TICK_MISSING_DIAG", "symbol": sym, "reason": "tick_none_after_retries", "retries": retries, "last_error": _last_error()})
+    return None
 
 
 def symbol_constraints():
-    info = mt5.symbol_info(CFG.SYMBOL)
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
+    info = mt5.symbol_info(sym) if _ensure_symbol_ready() else None
     if not info:
         return {"point": 0.01, "digits": 2, "stops_level_points": 0, "freeze_level_points": 0}
     return {
@@ -42,7 +272,8 @@ def symbol_constraints():
 
 
 def normalize_price(x: float) -> float:
-    info = mt5.symbol_info(CFG.SYMBOL)
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
+    info = mt5.symbol_info(sym) if _ensure_symbol_ready() else None
     digits = int(getattr(info, "digits", 2) or 2) if info else 2
     return round(float(x), digits)
 
@@ -55,29 +286,37 @@ def position_get(position_ticket: int):
 
 
 def orders_get():
-    return mt5.orders_get(symbol=CFG.SYMBOL) or []
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
+    if not _ensure_symbol_ready():
+        return []
+    return mt5.orders_get(symbol=sym) or []
 
 
 def open_market(side: str, volume: float, sl: float, tp: float):
+    # Ensure symbol is ready before trying to trade
+    if not _ensure_symbol_ready():
+        return None, None
+
     tick = symbol_tick()
     if not tick:
         return None, None
 
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
     side_u = (side or "").upper().strip()
     order_type = mt5.ORDER_TYPE_BUY if side_u == "BUY" else mt5.ORDER_TYPE_SELL
     price = float(tick.ask) if side_u == "BUY" else float(tick.bid)
 
-    # MARKET: primero IOC (evita 10030), fallback RETURN
+    # MARKET: first IOC, fallback RETURN
     base_req = {
         "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": CFG.SYMBOL,
+        "symbol": sym,
         "volume": float(volume),
         "type": order_type,
         "price": normalize_price(price),
         "sl": normalize_price(sl),
         "tp": normalize_price(tp) if tp is not None else 0.0,
-        "deviation": int(CFG.DEVIATION),
-        "magic": int(CFG.MAGIC),
+        "deviation": int(getattr(CFG, "DEVIATION", 0)),
+        "magic": int(getattr(CFG, "MAGIC", 0)),
         "comment": "TG_BOT",
     }
 
@@ -90,7 +329,7 @@ def open_market(side: str, volume: float, sl: float, tp: float):
         req["type_filling"] = fill
         last_req = req
 
-        if CFG.DRY_RUN:
+        if getattr(CFG, "DRY_RUN", False):
             return req, None
 
         res = mt5.order_send(req)
@@ -107,6 +346,10 @@ def open_market(side: str, volume: float, sl: float, tp: float):
 
 
 def open_pending(side: str, mode: str, volume: float, price: float, sl: float, tp: float):
+    if not _ensure_symbol_ready():
+        return None, None
+
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
     side_u = (side or "").upper().strip()
     mode_u = (mode or "").upper().strip()
 
@@ -121,18 +364,18 @@ def open_pending(side: str, mode: str, volume: float, price: float, sl: float, t
 
     req = {
         "action": mt5.TRADE_ACTION_PENDING,
-        "symbol": CFG.SYMBOL,
+        "symbol": sym,
         "volume": float(volume),
         "type": order_type,
         "price": normalize_price(price),
         "sl": normalize_price(sl),
         "tp": normalize_price(tp) if tp is not None else 0.0,
-        "deviation": int(CFG.DEVIATION),
-        "magic": int(CFG.MAGIC),
+        "deviation": int(getattr(CFG, "DEVIATION", 0)),
+        "magic": int(getattr(CFG, "MAGIC", 0)),
         "comment": "TG_BOT_PENDING",
         "type_filling": mt5.ORDER_FILLING_RETURN,
     }
-    if CFG.DRY_RUN:
+    if getattr(CFG, "DRY_RUN", False):
         return req, None
     res = mt5.order_send(req)
     return req, res
@@ -140,34 +383,38 @@ def open_pending(side: str, mode: str, volume: float, price: float, sl: float, t
 
 def cancel_order(order_ticket: int):
     req = {"action": mt5.TRADE_ACTION_REMOVE, "order": int(order_ticket)}
-    if CFG.DRY_RUN:
+    if getattr(CFG, "DRY_RUN", False):
         return req, None
     res = mt5.order_send(req)
     return req, res
 
 
 def close_position(position_ticket: int, side: str, volume: float):
+    if not _ensure_symbol_ready():
+        return None, None
+
     tick = symbol_tick()
     if not tick:
         return None, None
+
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
     side_u = (side or "").upper().strip()
-    # close: opposite order type
     order_type = mt5.ORDER_TYPE_SELL if side_u == "BUY" else mt5.ORDER_TYPE_BUY
     price = float(tick.bid) if side_u == "BUY" else float(tick.ask)
 
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": CFG.SYMBOL,
+        "symbol": sym,
         "position": int(position_ticket),
         "volume": float(volume),
         "type": order_type,
         "price": normalize_price(price),
-        "deviation": int(CFG.DEVIATION),
-        "magic": int(CFG.MAGIC),
+        "deviation": int(getattr(CFG, "DEVIATION", 0)),
+        "magic": int(getattr(CFG, "MAGIC", 0)),
         "comment": "TG_BOT_CLOSE",
         "type_filling": mt5.ORDER_FILLING_RETURN,
     }
-    if CFG.DRY_RUN:
+    if getattr(CFG, "DRY_RUN", False):
         return req, None
     res = mt5.order_send(req)
     return req, res
@@ -175,18 +422,22 @@ def close_position(position_ticket: int, side: str, volume: float):
 
 def modify_sltp(position_ticket: int, new_sl: float, new_tp: float):
     """Modify SL/TP for an open position."""
+    if not _ensure_symbol_ready():
+        return None, None
+
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
     new_sl = normalize_price(new_sl)
     new_tp = normalize_price(new_tp) if new_tp is not None else 0.0
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
-        "symbol": CFG.SYMBOL,
+        "symbol": sym,
         "position": position_ticket,
         "sl": new_sl,
         "tp": new_tp,
-        "magic": CFG.MAGIC,
+        "magic": getattr(CFG, "MAGIC", 0),
         "comment": "TG_BOT_MODIFY",
     }
-    if CFG.DRY_RUN:
+    if getattr(CFG, "DRY_RUN", False):
         return req, None
     res = mt5.order_send(req)
     return req, res
@@ -197,6 +448,9 @@ def modify_sl(position_ticket: int, new_sl: float, fallback_tp: float | None = N
 
     IMPORTANT: In MT5 a MODIFY with tp=0.0 removes the TP. So we must pass the current TP.
     """
+    if not _ensure_symbol_ready():
+        return None, None
+
     pos = position_get(position_ticket)
     tp_cur = None
     if pos is not None:
@@ -210,20 +464,22 @@ def modify_sl(position_ticket: int, new_sl: float, fallback_tp: float | None = N
     else:
         tp_use = tp_cur
 
+    sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
     new_sl = normalize_price(new_sl)
     tp_use = normalize_price(tp_use) if tp_use else 0.0
 
     req = {
         "action": mt5.TRADE_ACTION_SLTP,
-        "symbol": CFG.SYMBOL,
+        "symbol": sym,
         "position": position_ticket,
         "sl": new_sl,
         "tp": tp_use,
-        "magic": CFG.MAGIC,
+        "magic": getattr(CFG, "MAGIC", 0),
         "comment": "TG_BOT_BE",
     }
-    if CFG.DRY_RUN:
+    if getattr(CFG, "DRY_RUN", False):
         return req, None
     res = mt5.order_send(req)
     return req, res
+
 
