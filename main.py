@@ -6,6 +6,11 @@ from telethon import TelegramClient, events
 import config as CFG
 import core.logger as logger
 
+try:
+    from core.utils import set_tg_startup_cutoff, should_process_tg_message, safe_text_sample
+except Exception:
+    from utils import set_tg_startup_cutoff, should_process_tg_message, safe_text_sample
+
 from adapters import mt5_client as mt5c
 from core.executor import execute_signal
 from core.watcher import run_watcher
@@ -46,6 +51,16 @@ async def main():
         }
     )
 
+    # Safety: prevent processing Telegram "catch-up" backlog after restart.
+    cutoff_iso = set_tg_startup_cutoff(BOT_STATE)
+    logger.log_event(
+        {
+            "event": "TG_STARTUP_CUTOFF_SET",
+            "cutoff": cutoff_iso,
+            "ts": logger.iso_now(),
+        }
+    )
+
     # Start watcher task (BE pending, pending cancel checks, etc.)
     asyncio.create_task(run_watcher(BOT_STATE))
 
@@ -55,6 +70,29 @@ async def main():
             msg = event.message
             text = msg.message or ""
             reply_to = msg.reply_to_msg_id if msg.reply_to else None
+
+            ok, reason, cutoff_iso, age_s = should_process_tg_message(
+                state=BOT_STATE,
+                msg_id=msg.id,
+                msg_date_iso=msg.date.isoformat() if msg.date else None,
+                is_edit=False,
+            )
+            if not ok:
+                logger.log_event(
+                    {
+                        "event": "TG_MESSAGE_IGNORED",
+                        "msg_id": msg.id,
+                        "is_edit": False,
+                        "reply_to": reply_to,
+                        "date": msg.date.isoformat() if msg.date else None,
+                        "cutoff": cutoff_iso,
+                        "age_s": age_s,
+                        "reason": reason,
+                        "text": safe_text_sample(text, 300),
+                        "ts": logger.iso_now(),
+                    }
+                )
+                return
 
             logger.log_event(
                 {
@@ -91,6 +129,29 @@ async def main():
             msg = event.message
             text = msg.message or ""
             reply_to = msg.reply_to_msg_id if msg.reply_to else None
+
+            ok, reason, cutoff_iso, age_s = should_process_tg_message(
+                state=BOT_STATE,
+                msg_id=msg.id,
+                msg_date_iso=msg.date.isoformat() if msg.date else None,
+                is_edit=True,
+            )
+            if not ok:
+                logger.log_event(
+                    {
+                        "event": "TG_MESSAGE_IGNORED",
+                        "msg_id": msg.id,
+                        "is_edit": True,
+                        "reply_to": reply_to,
+                        "date": msg.date.isoformat() if msg.date else None,
+                        "cutoff": cutoff_iso,
+                        "age_s": age_s,
+                        "reason": reason,
+                        "text": safe_text_sample(text, 300),
+                        "ts": logger.iso_now(),
+                    }
+                )
+                return
 
             logger.log_event(
                 {

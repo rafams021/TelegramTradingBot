@@ -69,6 +69,10 @@ class BotState:
         self.signals: Dict[int, SignalState] = {}
         self.msg_cache: Dict[int, MsgCacheEntry] = {}
 
+        # Telegram safety: ignore backlog/catch-up messages after restart.
+        # Set once at TG_READY by main.py via utils.set_tg_startup_cutoff(...)
+        self.tg_startup_cutoff_iso: Optional[str] = None
+
     def upsert_msg_cache(self, msg_id: int, text: str) -> MsgCacheEntry:
         e = self.msg_cache.get(msg_id)
         if e is None:
