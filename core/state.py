@@ -1,10 +1,10 @@
-# core/state.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+import config as CFG
 from core.models import Signal
 
 
@@ -102,12 +102,21 @@ class BotState:
         st = self.signals.get(signal_msg_id)
         if st is None:
             return []
+
+        # Do not rebuild splits if they already exist
         if st.splits:
             return st.splits
 
         sig = st.signal
         splits: List[SplitState] = []
+
+        max_splits = int(getattr(CFG, "MAX_SPLITS", 0) or 0)
+
         for i, tp in enumerate(sig.tps):
+            # MAX_SPLITS: 0 or missing means "no cap"
+            if max_splits > 0 and i >= max_splits:
+                break
+
             splits.append(
                 SplitState(
                     split_index=i,
@@ -117,6 +126,7 @@ class BotState:
                     tp=tp,
                 )
             )
+
         st.splits = splits
         return splits
 
