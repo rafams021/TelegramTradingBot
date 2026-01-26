@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import re
 from typing import Optional
 
-from core.logger import Logger
-from core.state import BotState, now_iso
+from core import logger  # <-- usa el logger existente (no clase Logger)
+from core.state import BotState
 
 
 @dataclass
@@ -52,58 +52,74 @@ def classify_management(text: str) -> ManagementAction:
 
 
 def apply_management(state: BotState, msg_id: int, reply_to: Optional[int], mg: ManagementAction) -> None:
-    logger = Logger()
-
+    # Importante: management necesita reply_to para saber a qué señal afecta
     if reply_to is None:
-        logger.log({"event": "MANAGEMENT_IGNORED_NO_REPLY_TO", "msg_id": msg_id, "kind": mg.kind})
+        logger.log_event({"event": "MANAGEMENT_IGNORED_NO_REPLY_TO", "msg_id": msg_id, "kind": mg.kind})
         return
 
     sig_state = state.signals.get(reply_to)
     if not sig_state:
-        logger.log({"event": "MANAGEMENT_IGNORED_NO_SIGNAL", "msg_id": msg_id, "reply_to": reply_to, "kind": mg.kind})
+        logger.log_event(
+            {"event": "MANAGEMENT_IGNORED_NO_SIGNAL", "msg_id": msg_id, "reply_to": reply_to, "kind": mg.kind}
+        )
         return
 
     if mg.kind == "BE":
-        logger.log({"event": "BE_DETECTED", "msg_id": msg_id, "reply_to": reply_to})
+        logger.log_event({"event": "BE_DETECTED", "msg_id": msg_id, "reply_to": reply_to})
         for sp in sig_state.splits:
             if sp.status == "OPEN":
                 sp.be_armed = True
                 sp.be_done = False
-                logger.log({"event": "BE_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "ts": now_iso()})
+                logger.log_event({"event": "BE_ARMED", "msg_id": reply_to, "split_id": sp.split_id})
         return
 
     if mg.kind == "MOVE_SL":
-        logger.log({"event": "MOVE_SL_DETECTED", "msg_id": msg_id, "reply_to": reply_to, "price": mg.price})
+        logger.log_event({"event": "MOVE_SL_DETECTED", "msg_id": msg_id, "reply_to": reply_to, "price": mg.price})
         for sp in sig_state.splits:
-            # Guardamos el SL deseado en el split; watcher lo aplicará al ticket real cuando exista.
-            sp.sl = float(mg.price) if mg.price is not None else sp.sl
+            # Guardamos el SL deseado en el split; watcher lo aplicará cuando exista el ticket
+            if mg.price is not None:
+                sp.sl = float(mg.price)
             sp.sl_move_armed = True
             sp.sl_move_done = False
-            logger.log({"event": "MOVE_SL_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "price": mg.price, "ts": now_iso()})
+            logger.log_event(
+                {"event": "MOVE_SL_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "price": mg.price}
+            )
         return
 
     if mg.kind == "CLOSE_TP_AT":
-        logger.log({"event": "CLOSE_TP_DETECTED", "msg_id": msg_id, "reply_to": reply_to, "tp_index": mg.tp_index})
+        logger.log_event(
+            {"event": "CLOSE_TP_DETECTED", "msg_id": msg_id, "reply_to": reply_to, "tp_index": mg.tp_index}
+        )
         idx = int(mg.tp_index or 0)
         if idx <= 0:
-            logger.log({"event": "CLOSE_TP_INVALID_INDEX", "msg_id": msg_id, "reply_to": reply_to, "tp_index": mg.tp_index})
+            logger.log_event(
+                {
+                    "event": "CLOSE_TP_INVALID_INDEX",
+                    "msg_id": msg_id,
+                    "reply_to": reply_to,
+                    "tp_index": mg.tp_index,
+                }
+            )
             return
+
         for sp in sig_state.splits:
             if sp.status == "OPEN":
                 sp.close_armed = True
                 sp.close_done = False
-                # Cierra cuando se alcance el TP(idx) del signal original (si existe)
-                if idx - 1 < len(sig_state.signal.tps):
+                # target = TP(idx) de la señal original si existe
+                if (idx - 1) < len(sig_state.signal.tps):
                     sp.close_target = float(sig_state.signal.tps[idx - 1])
-                logger.log({"event": "CLOSE_TP_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "target": sp.close_target, "ts": now_iso()})
+                logger.log_event(
+                    {"event": "CLOSE_TP_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "target": sp.close_target}
+                )
         return
 
     if mg.kind == "CLOSE_ALL_AT":
-        logger.log({"event": "CLOSE_ALL_DETECTED", "msg_id": msg_id, "reply_to": reply_to})
+        logger.log_event({"event": "CLOSE_ALL_DETECTED", "msg_id": msg_id, "reply_to": reply_to})
         for sp in sig_state.splits:
             if sp.status == "OPEN":
                 sp.close_armed = True
                 sp.close_done = False
-                sp.close_target = None  # watcher interpretará como “cerrar inmediato” si decides implementarlo así
-                logger.log({"event": "CLOSE_ALL_ARMED", "msg_id": reply_to, "split_id": sp.split_id, "ts": now_iso()})
+                sp.close_target = None
+                logger.log_event({"event": "CLOSE_ALL_ARMED", "msg_id": reply_to, "split_id": sp.split_id})
         return
