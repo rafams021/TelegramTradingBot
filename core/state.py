@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import config as CFG
-from core.domain.models import Signal
+from core.models import Signal
 
 
 def _utc_now_iso() -> str:
@@ -37,6 +37,12 @@ class SplitState:
     close_done: bool = False
     close_attempts: int = 0
     close_applied_ts: Optional[str] = None
+    
+    # MOVE_SL support (añadido para compatibilidad con watcher)
+    sl_move_armed: bool = False
+    sl_move_done: bool = False
+    sl_move_attempts: int = 0
+    sl_move_applied_ts: Optional[float] = None
 
 
 @dataclass
@@ -135,4 +141,12 @@ class BotState:
         return splits
 
 
+# =========================
+# Backward compatibility
+# =========================
+
+# Alias para watcher.py que importa "State" en vez de "BotState"
+State = BotState
+
+# Instancia global
 BOT_STATE = BotState()
