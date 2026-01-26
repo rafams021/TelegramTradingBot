@@ -11,7 +11,7 @@ import config as CFG
 from infrastructure.logging import get_logger
 from core.domain.enums import OrderSide
 from core.domain.models import Signal
-from core.parser import parse_signal
+from core.parser_compat import parse_signal
 from core.state import BotState, SplitState
 
 
