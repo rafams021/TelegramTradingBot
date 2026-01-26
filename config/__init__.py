@@ -1,0 +1,96 @@
+# config/__init__.py
+"""
+Módulo de configuración del TelegramTradingBot.
+
+Exports:
+    - AppConfig, TelegramConfig, MT5Config, TradingConfig
+    - get_config(), set_config(), create_app_config()
+    - Todas las constantes
+"""
+
+from .settings import (
+    AppConfig,
+    TelegramConfig,
+    MT5Config,
+    TradingConfig,
+    get_config,
+    set_config,
+    create_app_config,
+    CONFIG,
+    # Backward compatibility
+    USE_REAL_ACCOUNT,
+    DRY_RUN,
+    LOG_FILE,
+    API_ID,
+    API_HASH,
+    SESSION_NAME,
+    CHANNEL_ID,
+    TG_EDIT_REPROCESS_WINDOW_S,
+    TG_EDIT_REPROCESS_MAX_ATTEMPTS,
+    MT5_LOGIN,
+    MT5_PASSWORD,
+    MT5_SERVER,
+    SYMBOL,
+    VOLUME_PER_ORDER,
+    DEVIATION,
+    MAGIC,
+    HARD_DRIFT,
+    MAX_SPLITS,
+    PENDING_TIMEOUT_MIN,
+    BUY_UP_TOL,
+    BUY_DOWN_TOL,
+    SELL_DOWN_TOL,
+    SELL_UP_TOL,
+    EXTRA_SLIPPAGE,
+    BE_BUFFER,
+)
+
+from .constants import (
+    MT5_RETCODE_SUCCESS,
+    MT5_RETCODE_INVALID_FILL,
+    COMMENT_MARKET_ORDER,
+    COMMENT_PENDING_ORDER,
+    COMMENT_CLOSE_ORDER,
+    COMMENT_MODIFY_BE,
+    COMMENT_MODIFY_SLTP,
+    DEFAULT_LOT,
+    DEFAULT_DEVIATION,
+    DEFAULT_POLL_INTERVAL_S,
+    DEFAULT_RETRY_ATTEMPTS,
+    DEFAULT_RETRY_DELAY_S,
+    STARTUP_CUTOFF_TOLERANCE_S,
+    SYMBOL_SELECT_RETRIES,
+    SYMBOL_SELECT_DELAY_S,
+    DEFAULT_EVENTS_PATH,
+    LOG_TEXT_SAMPLE_LIMIT,
+)
+
+__all__ = [
+    # Settings
+    "AppConfig",
+    "TelegramConfig",
+    "MT5Config",
+    "TradingConfig",
+    "get_config",
+    "set_config",
+    "create_app_config",
+    "CONFIG",
+    # Constants
+    "MT5_RETCODE_SUCCESS",
+    "MT5_RETCODE_INVALID_FILL",
+    "COMMENT_MARKET_ORDER",
+    "COMMENT_PENDING_ORDER",
+    "COMMENT_CLOSE_ORDER",
+    "COMMENT_MODIFY_BE",
+    "COMMENT_MODIFY_SLTP",
+    "DEFAULT_LOT",
+    "DEFAULT_DEVIATION",
+    "DEFAULT_POLL_INTERVAL_S",
+    "DEFAULT_RETRY_ATTEMPTS",
+    "DEFAULT_RETRY_DELAY_S",
+    "STARTUP_CUTOFF_TOLERANCE_S",
+    "SYMBOL_SELECT_RETRIES",
+    "SYMBOL_SELECT_DELAY_S",
+    "DEFAULT_EVENTS_PATH",
+    "LOG_TEXT_SAMPLE_LIMIT",
+]

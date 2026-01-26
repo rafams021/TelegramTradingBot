@@ -3,7 +3,7 @@ import time
 
 import config as CFG
 from adapters.mt5_client import MT5Client, Tick
-from core.logger import Logger
+from infrastructure.logging.logger import Logger
 from core.rules import tp_reached, min_stop_distance, be_allowed, close_at_triggered
 from core.state import State
 

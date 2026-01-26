@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-from core.models import Signal
+from core.domain.models import Signal
 
 # We keep this parser intentionally lightweight and tolerant. The bot should be able to
 # parse both clean formatted signals and common variations seen in Telegram edits.

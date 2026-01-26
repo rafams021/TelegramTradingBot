@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import config as CFG
-from core.models import Signal
+from core.domain.models import Signal
 
 
 def _utc_now_iso() -> str:

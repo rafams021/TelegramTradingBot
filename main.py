@@ -4,7 +4,7 @@ import traceback
 from telethon import TelegramClient, events
 
 import config as CFG
-import core.logger as logger
+import infrastructure.logging.logger as logger
 
 try:
     from core.utils import set_tg_startup_cutoff, should_process_tg_message, safe_text_sample
