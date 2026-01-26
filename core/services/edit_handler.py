@@ -38,8 +38,8 @@ class EditHandler:
         
         Reglas:
         1. Si no existe en cache → procesar (primera vez)
-        2. Si fuera de ventana Y sin cambios significativos → ignorar
-        3. Si tiene splits activos → ignorar (previene duplicados)
+        2. Si tiene splits activos → ignorar (previene duplicados)
+        3. Si fuera de ventana Y sin cambios significativos → ignorar
         4. Si cambio significativo (typo) → procesar aunque fuera de ventana
         
         Args:
@@ -56,12 +56,8 @@ class EditHandler:
         if cache is None:
             return True, "first_time"
         
-        # Verificar si está dentro de la ventana de edición
-        within_window = cache.within_window(self.edit_window_s)
-        
-        # Verificar si ya tiene splits activos
+        # PRIMERO: Verificar si ya tiene splits activos (previene duplicados)
         has_active_splits = self._has_active_splits(msg_id)
-        
         if has_active_splits:
             logger.warning(
                 "Edit ignored: splits already active",
@@ -69,6 +65,9 @@ class EditHandler:
                 splits_count=len(self.state.get_signal(msg_id).splits) if self.state.has_signal(msg_id) else 0
             )
             return False, "splits_already_active"
+        
+        # DESPUÉS: Verificar ventana de edición
+        within_window = cache.within_edit_window(self.edit_window_s)
         
         # Si fuera de ventana, verificar si hay cambio significativo
         if not within_window:

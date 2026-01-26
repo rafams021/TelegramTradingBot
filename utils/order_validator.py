@@ -114,7 +114,7 @@ def fix_invalid_limit_order(
     
     Estrategia:
     1. Si LIMIT pero entry ya fue cruzado → cambiar a MARKET
-    2. Si entry está muy lejos → mantener como SKIP
+    2. Si entry está muy lejos → cambiar a SKIP
     
     Args:
         side: Lado de la orden
@@ -139,8 +139,7 @@ def fix_invalid_limit_order(
         return mode  # No necesita corrección
     
     # Precio ya cruzó el entry
-    # Opción 1: Ejecutar a mercado inmediatamente
-    # Opción 2: Skip si está demasiado lejos
+    # Decidir entre MARKET (delta pequeño) o SKIP (delta grande)
     
     delta = abs(current_price - entry)
     
@@ -148,7 +147,7 @@ def fix_invalid_limit_order(
     if delta < 2.0:
         return ExecutionMode.MARKET
     
-    # Si delta es grande, mejor skip
+    # Si delta es grande (>=2 puntos), mejor skip
     return ExecutionMode.SKIP
 
 

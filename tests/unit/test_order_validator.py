@@ -186,8 +186,8 @@ class TestFixInvalidLimitOrder:
         """Si LIMIT inválido y delta grande, cambiar a SKIP."""
         fixed_mode = fix_invalid_limit_order(
             side=OrderSide.BUY,
-            entry=5090.0,
-            current_price=5100.0,  # Delta = 10.0
+            entry=5100.0,          # ← CAMBIAR: arriba del current (INVÁLIDO)
+            current_price=5090.0,  # ← CAMBIAR: abajo del entry
             mode=ExecutionMode.LIMIT
         )
         assert fixed_mode == ExecutionMode.SKIP

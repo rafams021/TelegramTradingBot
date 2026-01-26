@@ -70,19 +70,26 @@ class TestEditHandler:
             sl=4960.0
         )
         self.state.add_signal(signal)
-        
-        # 2. Crear splits PENDING
+
+        # 2. Crear cache del mensaje (IMPORTANTE: antes de crear splits)
+        self.state.upsert_msg_cache(msg_id=100, text="original text")
+
+        # 3. Crear splits PENDING
         splits = self.state.build_splits_for_signal(100)
+        
+        # Verificar que splits se crearon
+        assert len(splits) > 0, "No se crearon splits"
+        
         splits[0].status = "PENDING"
         splits[0].order_ticket = 154575709
-        
-        # 3. Intentar procesar edit
+
+        # 4. Intentar procesar edit
         should_process, reason = self.handler.should_process_edit(
             msg_id=100,
             new_text="edited text",
             signal=signal
         )
-        
+
         assert should_process is False
         assert reason == "splits_already_active"
     

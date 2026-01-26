@@ -25,16 +25,16 @@ class MessageClassifier:
     
     # Patrones que indican definitivamente NO es señal
     NON_SIGNAL_PATTERNS = [
-        r'^(SL|TP)\s*[❌✅]',                    # "SL❌", "TP✅"
-        r'^\+\d+\s*PIPS?\s*[✅❌]',              # "+40 PIPS✅"
-        r'\bCHICOS\b',                           # Mensajes a la comunidad
-        r'\bFALTA\s+POCO\b',                     # Anuncios
-        r'\bGRATUITAMENTE\b',                    # Marketing
-        r'\bACCESO\b.*\bOPORTUNIDAD\b',          # Marketing
-        r'^CANCELAR',                            # Comandos
-        r'^CERRAR\s+(AHORA|TODO)',               # Comandos de gestión
-        r'Modificar\s+el\s+Take\s+profit',       # Notas
-        r'Take\s+profit\s+\d+.*[✅❌]',          # Confirmaciones de TP
+        r'^(SL|TP)\s*[❌✅]',
+        r'^\+?\d+\s*PIPS?\s*[✅❌]',
+        r'^TP,?\s+\+?\d+\s*PIPS',
+        r'\bCHICOS\b',
+        r'\bFALTA\s+POCO\b',
+        r'\bGRATUITAMENTE\b',
+        r'\bACCESO\b.*\bOPORTUNIDAD\b',
+        r'^CANCELAR',
+        r'Modificar\s+el\s+Take\s+profit',
+        r'Take\s+profit\s+\d+.*[✅❌]',
     ]
     
     def __init__(self):
@@ -73,16 +73,16 @@ class MessageClassifier:
         
         text = text.strip()
         
-        # Primero verificar patrones de NO-señal
+        # PRIMERO: Verificar si parece comando de gestión
+        if self._is_management_command(text):
+            return "MANAGEMENT", "management_command_detected"
+        
+        # SEGUNDO: Verificar patrones de NO-señal
         for regex in self.non_signal_regexes:
             if regex.search(text):
                 return "NON_SIGNAL", f"matches_non_signal_pattern: {regex.pattern}"
         
-        # Verificar si parece comando de gestión
-        if self._is_management_command(text):
-            return "MANAGEMENT", "management_command_detected"
-        
-        # Contar cuántos indicadores de señal tiene
+        # TERCERO: Contar cuántos indicadores de señal tiene
         indicator_count = sum(
             1 for regex in self.signal_regexes
             if regex.search(text)
@@ -132,6 +132,7 @@ class MessageClassifier:
             r'MOVER.*SL',
             r'CERRAR.*TP',
             r'CERRAR.*TODO',
+            r'CERRAR.*AHORA',      # ← AGREGAR ESTE
             r'CLOSE.*ALL',
         ]
         
