@@ -1,204 +1,149 @@
 # main.py
+"""
+Punto de entrada principal del TelegramTradingBot.
+
+REFACTORIZADO EN FASE 3B:
+- Usa MT5Client y TelegramBotClient
+- Código más limpio y organizado
+- Mejor separación de responsabilidades
+"""
 import asyncio
 import traceback
-from telethon import TelegramClient, events
 
 import config as CFG
-import infrastructure.logging.logger as logger
+from infrastructure.logging import get_logger
 
-try:
-    from core.utils import set_tg_startup_cutoff, should_process_tg_message, safe_text_sample
-except Exception:
-    from utils import set_tg_startup_cutoff, should_process_tg_message, safe_text_sample
-
-from adapters import mt5_client as mt5c
+from adapters.mt5 import MT5Client
+from adapters.telegram import TelegramBotClient
 from core.executor import execute_signal
 from core.watcher import run_watcher
 from core.state import BOT_STATE
 
 
 async def main():
-    logger.log_event(
-        {
-            "event": "BOOT",
-            "ts": logger.iso_now(),
-        }
+    """
+    Función principal del bot.
+    
+    Flujo:
+    1. Inicializar logger
+    2. Conectar con MT5
+    3. Conectar con Telegram
+    4. Configurar handlers
+    5. Iniciar watcher
+    6. Ejecutar bot
+    """
+    logger = get_logger()
+    
+    # ==========================================
+    # 1. BOOT
+    # ==========================================
+    logger.event("BOOT")
+    
+    # ==========================================
+    # 2. MT5 CONNECTION
+    # ==========================================
+    mt5_client = MT5Client(
+        login=CFG.MT5_LOGIN,
+        password=CFG.MT5_PASSWORD,
+        server=CFG.MT5_SERVER,
+        symbol=CFG.SYMBOL,
+        deviation=getattr(CFG, "DEVIATION", 50),
+        magic=getattr(CFG, "MAGIC", 0),
+        dry_run=getattr(CFG, "DRY_RUN", False),
     )
-
-    # MT5 init
-    ok = mt5c.init()
-    logger.log_event(
-        {
-            "event": "MT5_READY" if ok else "MT5_INIT_FAILED",
-            "login": getattr(CFG, "MT5_LOGIN", None),
-            "server": getattr(CFG, "MT5_SERVER", None),
-            "ts": logger.iso_now(),
-        }
-    )
-    if not ok:
+    
+    if not mt5_client.connect():
+        logger.event(
+            "MT5_INIT_FAILED",
+            login=CFG.MT5_LOGIN,
+            server=CFG.MT5_SERVER,
+        )
         return
-
-    # Telegram init
-    client = TelegramClient(CFG.SESSION_NAME, CFG.API_ID, CFG.API_HASH)
-    await client.start()
-
-    logger.log_event(
-        {
-            "event": "TG_READY",
-            "user_id": str(getattr(client, "_self_id", "unknown")),
-            "channel_id": CFG.CHANNEL_ID,
-            "ts": logger.iso_now(),
-        }
+    
+    logger.event(
+        "MT5_READY",
+        login=CFG.MT5_LOGIN,
+        server=CFG.MT5_SERVER,
     )
-
-    # Safety: prevent processing Telegram "catch-up" backlog after restart.
-    cutoff_iso = set_tg_startup_cutoff(BOT_STATE)
-    logger.log_event(
-        {
-            "event": "TG_STARTUP_CUTOFF_SET",
-            "cutoff": cutoff_iso,
-            "ts": logger.iso_now(),
-        }
+    
+    # ==========================================
+    # 3. TELEGRAM CONNECTION
+    # ==========================================
+    tg_client = TelegramBotClient(
+        api_id=CFG.API_ID,
+        api_hash=CFG.API_HASH,
+        session_name=CFG.SESSION_NAME,
+        channel_id=CFG.CHANNEL_ID,
+        state=BOT_STATE,
     )
-
-    # Start watcher task (BE pending, pending cancel checks, etc.)
+    
+    if not await tg_client.start():
+        logger.event("TG_INIT_FAILED")
+        mt5_client.disconnect()
+        return
+    
+    # ==========================================
+    # 4. SETUP HANDLERS
+    # ==========================================
+    async def on_message(msg_id: int, text: str, reply_to: int, 
+                        date_iso: str, is_edit: bool = False):
+        """Handler para mensajes de Telegram."""
+        await execute_signal(
+            msg_id=msg_id,
+            text=text,
+            reply_to=reply_to,
+            date_iso=date_iso,
+            is_edit=is_edit,
+            state=BOT_STATE,
+        )
+    
+    async def on_edit(msg_id: int, text: str, reply_to: int, 
+                     date_iso: str, is_edit: bool = True):
+        """Handler para ediciones de mensajes."""
+        await execute_signal(
+            msg_id=msg_id,
+            text=text,
+            reply_to=reply_to,
+            date_iso=date_iso,
+            is_edit=is_edit,
+            state=BOT_STATE,
+        )
+    
+    tg_client.setup_handlers(
+        on_message=on_message,
+        on_edit=on_edit,
+    )
+    
+    # ==========================================
+    # 5. START WATCHER
+    # ==========================================
     asyncio.create_task(run_watcher(BOT_STATE))
-
-    @client.on(events.NewMessage(chats=CFG.CHANNEL_ID))
-    async def on_message(event):
-        try:
-            msg = event.message
-            text = msg.message or ""
-            reply_to = msg.reply_to_msg_id if msg.reply_to else None
-
-            ok, reason, cutoff_iso, age_s = should_process_tg_message(
-                state=BOT_STATE,
-                msg_id=msg.id,
-                msg_date_iso=msg.date.isoformat() if msg.date else None,
-                is_edit=False,
-            )
-            if not ok:
-                logger.log_event(
-                    {
-                        "event": "TG_MESSAGE_IGNORED",
-                        "msg_id": msg.id,
-                        "is_edit": False,
-                        "reply_to": reply_to,
-                        "date": msg.date.isoformat() if msg.date else None,
-                        "cutoff": cutoff_iso,
-                        "age_s": age_s,
-                        "reason": reason,
-                        "text": safe_text_sample(text, 300),
-                        "ts": logger.iso_now(),
-                    }
-                )
-                return
-
-            logger.log_event(
-                {
-                    "event": "TG_MESSAGE",
-                    "msg_id": msg.id,
-                    "reply_to": reply_to,
-                    "date": msg.date.isoformat() if msg.date else None,
-                    "text": text,
-                    "ts": logger.iso_now(),
-                }
-            )
-
-            await execute_signal(
-                msg_id=msg.id,
-                text=text,
-                reply_to=reply_to,
-                date_iso=msg.date.isoformat() if msg.date else None,
-                state=BOT_STATE,
-            )
-
-        except Exception as e:
-            logger.log_event(
-                {
-                    "event": "TG_HANDLER_ERROR",
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "ts": logger.iso_now(),
-                }
-            )
-
-    @client.on(events.MessageEdited(chats=CFG.CHANNEL_ID))
-    async def on_message_edited(event):
-        try:
-            msg = event.message
-            text = msg.message or ""
-            reply_to = msg.reply_to_msg_id if msg.reply_to else None
-
-            ok, reason, cutoff_iso, age_s = should_process_tg_message(
-                state=BOT_STATE,
-                msg_id=msg.id,
-                msg_date_iso=msg.date.isoformat() if msg.date else None,
-                is_edit=True,
-            )
-            if not ok:
-                logger.log_event(
-                    {
-                        "event": "TG_MESSAGE_IGNORED",
-                        "msg_id": msg.id,
-                        "is_edit": True,
-                        "reply_to": reply_to,
-                        "date": msg.date.isoformat() if msg.date else None,
-                        "cutoff": cutoff_iso,
-                        "age_s": age_s,
-                        "reason": reason,
-                        "text": safe_text_sample(text, 300),
-                        "ts": logger.iso_now(),
-                    }
-                )
-                return
-
-            logger.log_event(
-                {
-                    "event": "TG_MESSAGE_EDITED",
-                    "msg_id": msg.id,
-                    "reply_to": reply_to,
-                    "date": msg.date.isoformat() if msg.date else None,
-                    "text": text,
-                    "ts": logger.iso_now(),
-                }
-            )
-
-            await execute_signal(
-                msg_id=msg.id,
-                text=text,
-                reply_to=reply_to,
-                date_iso=msg.date.isoformat() if msg.date else None,
-                is_edit=True,
-                state=BOT_STATE,
-            )
-
-        except Exception as e:
-            logger.log_event(
-                {
-                    "event": "TG_EDIT_HANDLER_ERROR",
-                    "error": str(e),
-                    "traceback": traceback.format_exc(),
-                    "ts": logger.iso_now(),
-                }
-            )
-
-    await client.run_until_disconnected()
+    logger.info("Watcher iniciado")
+    
+    # ==========================================
+    # 6. RUN BOT
+    # ==========================================
+    logger.info("Bot iniciado correctamente")
+    
+    try:
+        await tg_client.run()
+    finally:
+        # Cleanup
+        await tg_client.disconnect()
+        mt5_client.disconnect()
+        logger.event("SHUTDOWN")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n⚠️  Bot detenido por usuario")
     except Exception as e:
-        logger.log_event(
-            {
-                "event": "FATAL",
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "ts": logger.iso_now(),
-            }
+        logger = get_logger()
+        logger.event(
+            "FATAL",
+            error=str(e),
+            traceback=traceback.format_exc(),
         )
         raise
-
-
-
