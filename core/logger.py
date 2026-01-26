@@ -3,60 +3,86 @@ from __future__ import annotations
 
 import json
 import os
-import sys
+import threading
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Optional
 
-import config
+# Archivo por defecto (puedes cambiarlo con env var si quieres)
+DEFAULT_EVENTS_PATH = os.environ.get("BOT_EVENTS_PATH", "bot_events.jsonl")
+
+_lock = threading.Lock()
 
 
-def iso_now() -> str:
+def _utc_ts() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _safe_print(line: str) -> None:
+def _ensure_dir(path: str) -> None:
+    d = os.path.dirname(os.path.abspath(path))
+    if d and not os.path.exists(d):
+        os.makedirs(d, exist_ok=True)
+
+
+def log_event(event: dict, path: str = DEFAULT_EVENTS_PATH) -> None:
     """
-    Windows console can be cp1252 and crash on emojis/special chars.
-    Never let logging crash the bot.
+    Escribe un evento JSONL (una línea por evento).
+    Mantiene compatibilidad con el resto del proyecto.
     """
     try:
-        print(line, flush=True)
-        return
-    except UnicodeEncodeError:
-        # Fallback: write bytes with replacement
-        try:
-            enc = (sys.stdout.encoding or "utf-8")
-            data = (line + "\n").encode(enc, errors="backslashreplace")
-            sys.stdout.buffer.write(data)
-            sys.stdout.flush()
-        except Exception:
-            # last resort: ignore stdout completely
-            pass
+        _ensure_dir(path)
+        payload = dict(event or {})
+        payload.setdefault("ts", _utc_ts())
+
+        line = json.dumps(payload, ensure_ascii=False)
+        with _lock:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
     except Exception:
+        # Evita romper el bot por fallas de logging
         pass
 
 
-def log(payload: Dict[str, Any]) -> None:
-    # Ensure timestamp
-    if "ts" not in payload:
-        payload["ts"] = iso_now()
-
-    line = json.dumps(payload, ensure_ascii=False)
-
-    # stdout (never crash)
-    _safe_print(line)
-
-    # file (project root) - UTF-8, safe
-    try:
-        root = os.path.dirname(os.path.dirname(__file__))
-        path = os.path.join(root, config.LOG_FILE)
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    except Exception:
-        # never crash due to logging
-        pass
+def log(message: str, **fields: Any) -> None:
+    """
+    Helper simple: logea un evento tipo LOG.
+    """
+    ev = {"event": "LOG", "message": str(message)}
+    if fields:
+        ev.update(fields)
+    log_event(ev)
 
 
-def log_event(payload: Dict[str, Any]) -> None:
-    # Backward-compatible alias
-    log(payload)
+# ✅ Compatibilidad: algunos módulos hacen `from core.logger import logger`
+# Si ya usabas `logger` en algún lado, lo mantenemos.
+def logger(message: str, **fields: Any) -> None:
+    log(message, **fields)
+
+
+# ✅ Compatibilidad clave: algunos módulos hacen `from core.logger import Logger`
+class Logger:
+    """
+    Wrapper para no romper imports antiguos:
+      - Logger.log(...)
+      - Logger.event({...})
+    """
+
+    @staticmethod
+    def log(message: str, **fields: Any) -> None:
+        log(message, **fields)
+
+    @staticmethod
+    def event(event: dict, path: str = DEFAULT_EVENTS_PATH) -> None:
+        log_event(event, path=path)
+
+    @staticmethod
+    def info(message: str, **fields: Any) -> None:
+        log(message, level="INFO", **fields)
+
+    @staticmethod
+    def warning(message: str, **fields: Any) -> None:
+        log(message, level="WARNING", **fields)
+
+    @staticmethod
+    def error(message: str, **fields: Any) -> None:
+        log(message, level="ERROR", **fields)
+

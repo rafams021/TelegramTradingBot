@@ -1,4 +1,10 @@
+# adapters/mt5_client.py
+from __future__ import annotations
+
 import time
+from dataclasses import dataclass
+from typing import Any, Optional
+
 import MetaTrader5 as mt5
 import config as CFG
 
@@ -10,6 +16,28 @@ except Exception:
         import logger  # fallback if logger.py is at project root
     except Exception:
         logger = None
+
+
+# -------------------------
+# Compat types for imports
+# -------------------------
+@dataclass
+class Tick:
+    bid: float
+    ask: float
+    last: float = 0.0
+    time_msc: int = 0
+
+
+def _to_tick(native_tick: Any) -> Tick:
+    if native_tick is None:
+        return Tick(bid=0.0, ask=0.0, last=0.0, time_msc=0)
+    return Tick(
+        bid=float(getattr(native_tick, "bid", 0.0) or 0.0),
+        ask=float(getattr(native_tick, "ask", 0.0) or 0.0),
+        last=float(getattr(native_tick, "last", 0.0) or 0.0),
+        time_msc=int(getattr(native_tick, "time_msc", 0) or 0),
+    )
 
 
 # -------------------------
@@ -214,6 +242,18 @@ def init() -> bool:
     return True
 
 
+def shutdown() -> None:
+    """Optional helper if you ever need a clean shutdown."""
+    global _MT5_READY, _SYMBOL_READY, _SYMBOL_READY_NAME
+    try:
+        mt5.shutdown()
+    except Exception:
+        pass
+    _MT5_READY = False
+    _SYMBOL_READY = False
+    _SYMBOL_READY_NAME = None
+
+
 def account_login():
     info = mt5.account_info()
     return info.login if info else None
@@ -237,14 +277,21 @@ def symbol_tick():
     sym = str(getattr(CFG, "SYMBOL", "") or "").strip()
 
     if not _ensure_symbol_ready():
-        _log({"event": "MT5_TICK_MISSING_DIAG", "symbol": sym, "reason": "symbol_not_ready", "last_error": _last_error()})
+        _log(
+            {
+                "event": "MT5_TICK_MISSING_DIAG",
+                "symbol": sym,
+                "reason": "symbol_not_ready",
+                "last_error": _last_error(),
+            }
+        )
         return None
 
     # Retry a bit: real feeds can return None momentarily even with selection OK
     retries = 3
     delay_s = 0.20
     last = None
-    for i in range(retries):
+    for _ in range(retries):
         try:
             last = mt5.symbol_info_tick(sym)
         except Exception:
@@ -254,8 +301,21 @@ def symbol_tick():
             return last
         time.sleep(delay_s)
 
-    _log({"event": "MT5_TICK_MISSING_DIAG", "symbol": sym, "reason": "tick_none_after_retries", "retries": retries, "last_error": _last_error()})
+    _log(
+        {
+            "event": "MT5_TICK_MISSING_DIAG",
+            "symbol": sym,
+            "reason": "tick_none_after_retries",
+            "retries": retries,
+            "last_error": _last_error(),
+        }
+    )
     return None
+
+
+def symbol_tick_safe() -> Tick:
+    """Convenience: returns Tick dataclass instead of native MT5 tick."""
+    return _to_tick(symbol_tick())
 
 
 def symbol_constraints():
@@ -481,5 +541,53 @@ def modify_sl(position_ticket: int, new_sl: float, fallback_tp: float | None = N
         return req, None
     res = mt5.order_send(req)
     return req, res
+
+
+# -------------------------
+# Wrapper class (compat for watcher imports)
+# -------------------------
+class MT5Client:
+    """
+    Compat wrapper:
+        from adapters.mt5_client import MT5Client, Tick
+
+    Internamente usa las funciones del módulo (sin duplicar lógica).
+    """
+
+    def __init__(self, login: int | None = None, password: str | None = None, server: str | None = None):
+        # En tu proyecto real, las credenciales vienen de CFG; guardamos por compatibilidad.
+        self.login = login
+        self.password = password
+        self.server = server
+
+    def init(self) -> bool:
+        return init()
+
+    def shutdown(self) -> None:
+        return shutdown()
+
+    def symbol_tick(self) -> Any:
+        return symbol_tick()
+
+    def symbol_tick_safe(self) -> Tick:
+        return symbol_tick_safe()
+
+    def open_market(self, side: str, volume: float, sl: float, tp: float):
+        return open_market(side, volume, sl, tp)
+
+    def open_pending(self, side: str, mode: str, volume: float, price: float, sl: float, tp: float):
+        return open_pending(side, mode, volume, price, sl, tp)
+
+    def modify_sl(self, position_ticket: int, new_sl: float, fallback_tp: float | None = None):
+        return modify_sl(position_ticket, new_sl, fallback_tp)
+
+    def modify_sltp(self, position_ticket: int, new_sl: float, new_tp: float):
+        return modify_sltp(position_ticket, new_sl, new_tp)
+
+    def close_position(self, position_ticket: int, side: str, volume: float):
+        return close_position(position_ticket, side, volume)
+
+    def cancel_order(self, order_ticket: int):
+        return cancel_order(order_ticket)
 
 
