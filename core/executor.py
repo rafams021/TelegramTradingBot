@@ -119,28 +119,26 @@ async def execute_signal(
             "date": date_iso,
             "side": sig.side,
             "entry": sig.entry,
+            "tps": sig.tps,
             "sl": sig.sl,
-            "tps": list(sig.tps),
-            "is_edit": is_edit,
         }
     )
 
-    # --- 3) MT5 tick actual ---
-    tick = mt5c.symbol_tick()
-    if not tick:
-        logger.log_event({"event": "MT5_TICK_MISSING", "msg_id": msg_id})
+    # Guardar señal en estado (si ya existía por edit, add_signal lo ignora; está ok)
+    state.add_signal(sig)
+
+    # Asegurar MT5 listo
+    if not mt5c.is_ready():
+        logger.log_event({"event": "MT5_NOT_READY", "msg_id": msg_id})
         return
 
-    bid = float(tick.bid)
-    ask = float(tick.ask)
-    current_price = _current_price_for_side(sig.side, bid, ask)
+    tick = mt5c.get_tick()
+    if not tick:
+        logger.log_event({"event": "MT5_NO_TICK", "msg_id": msg_id})
+        return
 
-    # --- 4) Decide ejecución ---
-    mode = decide_execution(
-        side=sig.side,
-        entry=float(sig.entry),
-        current_price=float(current_price),
-    )
+    current_price = _current_price_for_side(sig.side, tick.bid, tick.ask)
+    mode = decide_execution(sig.side, sig.entry, current_price)
 
     logger.log_event(
         {
@@ -148,16 +146,10 @@ async def execute_signal(
             "msg_id": msg_id,
             "side": sig.side,
             "entry": sig.entry,
-            "bid": bid,
-            "ask": ask,
+            "bid": tick.bid,
+            "ask": tick.ask,
             "current_price": current_price,
-            "delta": current_price - float(sig.entry),
             "mode": mode,
-            "hard_drift": float(getattr(CFG, "HARD_DRIFT", 0.0) or 0.0),
-            "buy_up_tol": float(getattr(CFG, "BUY_UP_TOL", 0.0) or 0.0),
-            "buy_down_tol": float(getattr(CFG, "BUY_DOWN_TOL", 0.0) or 0.0),
-            "sell_up_tol": float(getattr(CFG, "SELL_UP_TOL", 0.0) or 0.0),
-            "sell_down_tol": float(getattr(CFG, "SELL_DOWN_TOL", 0.0) or 0.0),
         }
     )
 
@@ -168,89 +160,103 @@ async def execute_signal(
                 "msg_id": msg_id,
                 "side": sig.side,
                 "entry": sig.entry,
+                "bid": tick.bid,
+                "ask": tick.ask,
                 "current_price": current_price,
             }
         )
         return
 
-    # --- 5) Guardar señal en state + construir splits ---
-    # (Si ya estaba agregada por un edit anterior, add_signal lo ignora.)
-    state.add_signal(sig)
+    # Splits (TP1/TP2/...) se manejan por estado
     splits = state.build_splits_for_signal(sig.message_id)
 
-    # --- 6) Enviar órdenes por split ---
-    vol = float(getattr(CFG, "VOLUME_PER_ORDER", 0.01) or 0.01)
+    # En ediciones, build_splits_for_signal puede devolver splits ya existentes.
+    # Para evitar duplicados (y re-abrir operaciones) sólo enviamos los splits NUEVOS.
+    splits_to_send = [sp for sp in splits if getattr(sp, "status", None) == "NEW"]
+    if not splits_to_send:
+        logger.log_event(
+            {
+                "event": "SIGNAL_NO_NEW_SPLITS",
+                "msg_id": msg_id,
+                "is_edit": is_edit,
+                "date": date_iso,
+            }
+        )
+        return
 
-    for sp in splits:
-        # sp: core.state.SplitState
-        tp = float(sp.tp)
-
-        if _maybe_skip_if_tp_already_reached(sig.side, tp, bid, ask):
+    # Si ya está en TP al momento, no vale la pena abrir
+    for sp in splits_to_send:
+        if _maybe_skip_if_tp_already_reached(sig.side, sp.tp, tick.bid, tick.ask):
             sp.status = "CANCELED"
             logger.log_event(
                 {
-                    "event": "SPLIT_SKIPPED_TP_REACHED",
+                    "event": "SPLIT_SKIPPED_TP_ALREADY_REACHED",
                     "signal_msg_id": msg_id,
                     "split": sp.split_index,
-                    "tp": tp,
-                    "bid": bid,
-                    "ask": ask,
+                    "tp": sp.tp,
+                    "bid": tick.bid,
+                    "ask": tick.ask,
                 }
             )
+
+    # Enviar órdenes
+    for sp in splits_to_send:
+        if sp.status != "NEW":
             continue
 
+        vol = float(getattr(CFG, "DEFAULT_LOT", 0.01))
         if mode == "MARKET":
-            req, res = mt5c.open_market(side=sig.side, volume=vol, sl=float(sig.sl), tp=tp)
-            open_evt = "OPEN_MARKET"
-        else:
-            # Para ahora: pending usando LIMIT/STOP tal cual mode (rules puede devolver LIMIT)
-            req, res = mt5c.open_pending(side=sig.side, mode=mode, volume=vol, price=float(sig.entry), sl=float(sig.sl), tp=tp)
-            open_evt = "OPEN_PENDING"
-
-        logger.log_event(
-            {
-                "event": open_evt,
-                "signal_msg_id": msg_id,
-                "split": sp.split_index,
-                "side": sig.side,
-                "entry": float(sig.entry),
-                "sl": float(sig.sl),
-                "tp": tp,
-                "mode": mode,
-                "request": req,
-                "result": str(res),
-            }
-        )
-
-        if res is None:
-            # DRY_RUN
-            sp.status = "DRY_RUN"
-            continue
-
-        ret = int(getattr(res, "retcode", 0) or 0)
-
-        if ret == 10009:
-            if open_evt == "OPEN_PENDING":
-                sp.status = "PENDING"
-                sp.order_ticket = int(getattr(res, "order", 0) or 0)
-                sp.position_ticket = None
-                sp.open_price = None
-            else:
+            req, res = mt5c.open_market(sig.side, vol=vol, sl=sig.sl, tp=sp.tp)
+            sp.last_req = req
+            sp.last_res = str(res)
+            if res and getattr(res, "retcode", None) == 10009:
                 sp.status = "OPEN"
-                # En DEAL, MetaTrader5 suele devolver position en "order" o "deal" dependiendo broker.
-                # Tu watcher asume position_ticket == order_ticket en filled market también; aquí guardamos el "order" por consistencia.
-                sp.position_ticket = int(getattr(res, "order", 0) or 0)
-                sp.order_ticket = None
-                sp.open_price = float(getattr(res, "price", 0.0) or 0.0)
-        else:
-            sp.status = "OPEN_FAILED"
+                sp.position_ticket = getattr(res, "order", None)
+            else:
+                sp.status = "ERROR"
+
             logger.log_event(
                 {
-                    "event": "OPEN_FAILED",
+                    "event": "MARKET_ORDER_SENT",
                     "signal_msg_id": msg_id,
                     "split": sp.split_index,
-                    "retcode": ret,
-                    "comment": str(getattr(res, "comment", "")),
+                    "side": sig.side,
+                    "vol": vol,
+                    "sl": sig.sl,
+                    "tp": sp.tp,
+                    "result": str(res),
+                }
+            )
+        else:
+            # pending order (LIMIT o STOP, ya decidido en rules)
+            req, res = mt5c.open_pending(
+                sig.side,
+                price=sig.entry,
+                vol=vol,
+                sl=sig.sl,
+                tp=sp.tp,
+                mode=mode,
+            )
+            sp.last_req = req
+            sp.last_res = str(res)
+            if res and getattr(res, "retcode", None) == 10009:
+                sp.status = "PENDING"
+                sp.order_ticket = getattr(res, "order", None)
+                sp.pending_created_ts = mt5c.time_now()
+            else:
+                sp.status = "ERROR"
+
+            logger.log_event(
+                {
+                    "event": "PENDING_ORDER_SENT",
+                    "signal_msg_id": msg_id,
+                    "split": sp.split_index,
+                    "side": sig.side,
+                    "mode": mode,
+                    "entry": sig.entry,
+                    "vol": vol,
+                    "sl": sig.sl,
+                    "tp": sp.tp,
                     "result": str(res),
                 }
             )

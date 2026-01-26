@@ -6,7 +6,7 @@ ExecutionMode = Literal["MARKET", "LIMIT", "STOP", "SKIP"]
 
 def decide_execution(side: str, entry: float, current_price: float) -> ExecutionMode:
     """
-    Decide cómo ejecutar la entrada (MARKET vs pending LIMIT) en función de la distancia al entry.
+    Decide cómo ejecutar la entrada (MARKET vs pending LIMIT/STOP) en función de la distancia al entry.
 
     Definición:
       delta = current_price - entry
@@ -16,10 +16,11 @@ def decide_execution(side: str, entry: float, current_price: float) -> Execution
     Política:
       1) Si abs(delta) > HARD_DRIFT => SKIP (no operar; demasiado lejos del entry).
       2) Si está dentro de tolerancia MARKET => MARKET.
-      3) Si está fuera de tolerancia MARKET pero no demasiado lejos => LIMIT (esperar pullback).
-
-    Nota:
-      "STOP" se conserva como opción para futuro, pero esta política (por ahora) no lo usa.
+      3) Si está fuera de tolerancia MARKET pero no demasiado lejos => pending.
+         - BUY:  entry arriba del precio actual => BUY STOP (breakout)
+                 entry abajo del precio actual => BUY LIMIT (pullback)
+         - SELL: entry abajo del precio actual => SELL STOP (breakout)
+                 entry arriba del precio actual => SELL LIMIT (pullback)
     """
     side_u = (side or "").upper().strip()
     delta = float(current_price) - float(entry)
@@ -30,17 +31,15 @@ def decide_execution(side: str, entry: float, current_price: float) -> Execution
 
     if side_u == "BUY":
         # BUY: tolerancia asimétrica
-        if delta > float(CFG.BUY_UP_TOL):
-            return "LIMIT"
-        if delta < -float(CFG.BUY_DOWN_TOL):
-            return "LIMIT"
+        if delta > float(CFG.BUY_UP_TOL) or delta < -float(CFG.BUY_DOWN_TOL):
+            # entry abajo del precio actual => LIMIT; entry arriba => STOP
+            return "STOP" if float(entry) > float(current_price) else "LIMIT"
         return "MARKET"
 
     # SELL: tolerancia asimétrica
-    if delta < -float(CFG.SELL_DOWN_TOL):
-        return "LIMIT"
-    if delta > float(CFG.SELL_UP_TOL):
-        return "LIMIT"
+    if delta < -float(CFG.SELL_DOWN_TOL) or delta > float(CFG.SELL_UP_TOL):
+        # entry abajo del precio actual => STOP; entry arriba => LIMIT
+        return "STOP" if float(entry) < float(current_price) else "LIMIT"
     return "MARKET"
 
 
