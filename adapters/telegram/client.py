@@ -2,6 +2,8 @@
 """
 Wrapper del cliente de Telegram (Telethon).
 Simplifica la configuración y manejo de eventos.
+
+ACTUALIZADO: Soporte para QR Code login
 """
 from __future__ import annotations
 
@@ -20,7 +22,7 @@ class TelegramBotClient:
     Wrapper del cliente de Telegram.
     
     Simplifica:
-    - Conexión y autenticación
+    - Conexión y autenticación (con QR Code opcional)
     - Configuración de handlers
     - Logging de eventos
     - Filtrado de mensajes (startup cutoff)
@@ -33,6 +35,7 @@ class TelegramBotClient:
         session_name: str,
         channel_id: int,
         state: BotState,
+        use_qr: bool = False,
     ):
         """
         Args:
@@ -41,12 +44,14 @@ class TelegramBotClient:
             session_name: Nombre de la sesión
             channel_id: ID del canal a monitorear
             state: Estado del bot
+            use_qr: Si True, intenta login con QR code
         """
         self.api_id = api_id
         self.api_hash = api_hash
         self.session_name = session_name
         self.channel_id = channel_id
         self.state = state
+        self.use_qr = use_qr
         self.logger = get_logger()
         
         self.client = TelegramClient(session_name, api_id, api_hash)
@@ -57,11 +62,17 @@ class TelegramBotClient:
         """
         Inicia el cliente de Telegram.
         
+        Si use_qr=True, intenta login con QR code.
+        Si use_qr=False, usa el método normal (teléfono/código).
+        
         Returns:
             True si la conexión fue exitosa
         """
         try:
-            await self.client.start()
+            if self.use_qr:
+                await self._start_with_qr()
+            else:
+                await self.client.start()
             
             user_id = getattr(self.client, "_self_id", "unknown")
             self.logger.event(
@@ -86,6 +97,68 @@ class TelegramBotClient:
                 error=str(ex),
             )
             return False
+    
+    async def _start_with_qr(self) -> None:
+        """
+        Inicia sesión usando QR code.
+        
+        Genera un QR code como imagen PNG que el usuario escanea
+        desde su app de Telegram.
+        """
+        import qrcode
+        from io import BytesIO
+        from PIL import Image
+        
+        await self.client.connect()
+        
+        if await self.client.is_user_authorized():
+            self.logger.info("Ya está autorizado, usando sesión existente")
+            return
+        
+        print("\n" + "="*60)
+        print("🔐 TELEGRAM LOGIN CON QR CODE")
+        print("="*60)
+        print("\nGenerando QR code...")
+        
+        # Solicitar QR code a Telegram
+        qr_login = await self.client.qr_login()
+        
+        # Guardar imagen del QR
+        qr_image_path = "telegram_qr.png"
+        
+        # Generar QR code como imagen
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_login.url)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        img.save(qr_image_path)
+        
+        print(f"\n✅ QR Code guardado en: {qr_image_path}")
+        print("\n📱 INSTRUCCIONES:")
+        print("1. Abre Telegram en tu teléfono")
+        print("2. Ve a Settings → Devices → Link Desktop Device")
+        print("3. Escanea el QR code de la imagen 'telegram_qr.png'")
+        print("\n⏳ Esperando que escanees el QR code...\n")
+        
+        # También mostrar en consola (ASCII art)
+        qr_console = qrcode.QRCode()
+        qr_console.add_data(qr_login.url)
+        qr_console.make()
+        qr_console.print_ascii()
+        
+        # Esperar a que el usuario escanee
+        try:
+            await qr_login.wait(timeout=120)  # 2 minutos timeout
+            print("\n✅ Login exitoso!")
+        except TimeoutError:
+            print("\n❌ Timeout: No escaneaste el QR a tiempo")
+            raise
     
     def setup_handlers(
         self,

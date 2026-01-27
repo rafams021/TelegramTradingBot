@@ -55,7 +55,10 @@ if not exist "%BOT_MAIN%" (
 )
 
 cd /d "%BOT_DIR%"
-python -u "%BOT_MAIN%" 1>>stdout.log 2>>stderr.log
+REM CAMBIADO: Quitar redirección para ver output en consola
+python -u "%BOT_MAIN%"
 
+echo.
+echo Exit code: %ERRORLEVEL%
 echo Exit code: %ERRORLEVEL%>>"%LOG%"
 pause
