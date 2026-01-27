@@ -112,21 +112,22 @@ class SignalService:
         
         return sig
     
-    def create_splits(self, signal_msg_id: int) -> List[SplitState]:
+    def create_splits(self, signal: Signal) -> List[SplitState]:
         """
         Crea splits (posiciones individuales) para cada TP de la señal.
         
         Args:
-            signal_msg_id: ID del mensaje de la señal
+            signal: Objeto Signal con la información de trading
         
         Returns:
             Lista de SplitState, uno por cada TP
         """
-        splits = self.state.build_splits_for_signal(signal_msg_id)
+        # FIX: Usar signal.message_id para buscar en el diccionario
+        splits = self.state.build_splits_for_signal(signal.message_id)
         
         self.logger.info(
             "Splits creados",
-            signal_msg_id=signal_msg_id,
+            signal_msg_id=signal.message_id,
             num_splits=len(splits),
             tps=[s.tp for s in splits],
         )
