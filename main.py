@@ -6,6 +6,8 @@ REFACTORIZADO EN FASE 3B:
 - Usa MT5Client y TelegramBotClient
 - Código más limpio y organizado
 - Mejor separación de responsabilidades
+
+FIX: Establece mt5_client global para executor
 """
 import asyncio
 import traceback
@@ -15,7 +17,7 @@ from infrastructure.logging import get_logger
 
 from adapters.mt5 import MT5Client
 from adapters.telegram import TelegramBotClient
-from core.executor import execute_signal
+from core.executor import execute_signal, set_mt5_client
 from core.watcher import run_watcher
 from core.state import BOT_STATE
 
@@ -65,6 +67,9 @@ async def main():
         login=CFG.MT5_LOGIN,
         server=CFG.MT5_SERVER,
     )
+    
+    # CRITICAL: Set global MT5 client for executor
+    set_mt5_client(mt5_client)
     
     # ==========================================
     # 3. TELEGRAM CONNECTION
