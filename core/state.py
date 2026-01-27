@@ -20,7 +20,7 @@ class SplitState:
     sl: float
     tp: float
 
-    status: str = "PENDING"  # PENDING / OPEN / CLOSED / CANCELED
+    status: str = "NEW"  # FIX: Cambiado de "PENDING" a "NEW"
     order_ticket: Optional[int] = None
     position_ticket: Optional[int] = None
     open_price: Optional[float] = None
@@ -134,6 +134,7 @@ class BotState:
                     entry=sig.entry,
                     sl=sig.sl,
                     tp=tp,
+                    # status="NEW" es el default ahora, no hace falta especificarlo
                 )
             )
 
