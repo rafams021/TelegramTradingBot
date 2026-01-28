@@ -58,18 +58,18 @@ class SignalMetrics:
 @dataclass
 class PositionMetrics:
     """Métricas de una posición (split) individual."""
-    # Identificación
+    # Identificación (campos requeridos primero)
     signal_msg_id: int
     split_index: int
-    ticket: Optional[int] = None
-    
-    # Trading
     side: str
     entry_intended: float
-    entry_actual: Optional[float] = None
     tp: float
     sl: float
     volume: float
+    
+    # Campos opcionales después
+    ticket: Optional[int] = None
+    entry_actual: Optional[float] = None
     
     # Results
     status: str = "OPEN"
