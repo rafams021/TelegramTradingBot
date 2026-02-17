@@ -5,9 +5,13 @@ Punto de entrada principal del TelegramTradingBot.
 FASE A - LIMPIEZA:
 - Registra instancia MT5 única en compat wrapper (evita doble conexión)
 - Modo degradado: si Telegram falla, el bot continúa con MT5 + watchers activos
-  listo para recibir el módulo autónomo en fases siguientes
+
+FIX - TELEGRAM SESSION:
+- Verifica que existe el archivo de sesión antes de intentar conectar
+- Si no existe, salta Telegram silenciosamente sin pedir credenciales
 """
 import asyncio
+import os
 import traceback
 
 import config as CFG
@@ -21,10 +25,34 @@ from core.watcher import run_watcher
 from core.state import BOT_STATE
 
 
+def _telegram_session_exists() -> bool:
+    """
+    Verifica si existe el archivo de sesión de Telegram.
+
+    Telethon guarda la sesión en {SESSION_NAME}.session.
+    Si no existe, intentar conectar causaría un prompt interactivo
+    pidiendo número de teléfono — lo cual bloquea el bot.
+
+    Returns:
+        True si el archivo de sesión existe y podemos intentar conectar
+    """
+    session_file = f"{CFG.SESSION_NAME}.session"
+    exists = os.path.isfile(session_file)
+
+    logger = get_logger()
+    if not exists:
+        logger.event(
+            "TG_SESSION_NOT_FOUND",
+            session_file=session_file,
+            detail="Saltando Telegram — no hay sesión guardada.",
+        )
+    return exists
+
+
 async def _run_telegram(tg_client: TelegramBotClient, logger) -> None:
     """
     Intenta conectar y correr Telegram.
-    Si falla, loggea y retorna silenciosamente (modo degradado).
+    Si falla o no hay sesión, loggea y retorna silenciosamente.
     No detiene el bot ni desconecta MT5.
     """
     try:
@@ -104,10 +132,10 @@ async def main():
     Flujo:
     1. Boot
     2. Conectar MT5
-    3. Registrar instancia MT5 única (Fase A)
+    3. Registrar instancia MT5 única
     4. Iniciar watchers
-    5a. Si Telegram disponible → correr con Telegram
-    5b. Si Telegram no disponible → modo degradado (loop vivo)
+    5a. Si existe sesión Telegram → intentar conectar
+    5b. Si no existe sesión o falla → modo degradado
     """
     logger = get_logger()
 
@@ -135,7 +163,7 @@ async def main():
             login=CFG.MT5_LOGIN,
             server=CFG.MT5_SERVER,
         )
-        return  # MT5 es crítico, sin él no hay nada que hacer
+        return
 
     logger.event(
         "MT5_READY",
@@ -144,9 +172,7 @@ async def main():
     )
 
     # ==========================================
-    # 3. REGISTRAR INSTANCIA MT5 ÚNICA (Fase A)
-    # Garantiza que executor Y watchers compartan
-    # la misma conexión, no dos instancias paralelas.
+    # 3. REGISTRAR INSTANCIA MT5 ÚNICA
     # ==========================================
     set_compat_client(mt5_client)
     set_mt5_client(mt5_client)
@@ -162,29 +188,34 @@ async def main():
     # ==========================================
     # 5. TELEGRAM O MODO DEGRADADO
     # ==========================================
-    tg_client = TelegramBotClient(
-        api_id=CFG.API_ID,
-        api_hash=CFG.API_HASH,
-        session_name=CFG.SESSION_NAME,
-        channel_id=CFG.CHANNEL_ID,
-        state=BOT_STATE,
-    )
+    degraded_task = asyncio.create_task(_run_degraded(logger))
 
-    try:
-        telegram_task = asyncio.create_task(_run_telegram(tg_client, logger))
-        degraded_task = asyncio.create_task(_run_degraded(logger))
-
-        # Esperamos a que Telegram termine (crash, ban, desconexión)
-        # El degraded loop sigue corriendo mientras tanto
-        await telegram_task
-
-        # Telegram terminó — bot se mantiene vivo por degraded loop
-        logger.event(
-            "TG_TASK_ENDED",
-            detail="Telegram terminó. Bot continúa en modo degradado.",
+    if _telegram_session_exists():
+        # Hay sesión guardada — intentar conectar
+        tg_client = TelegramBotClient(
+            api_id=CFG.API_ID,
+            api_hash=CFG.API_HASH,
+            session_name=CFG.SESSION_NAME,
+            channel_id=CFG.CHANNEL_ID,
+            state=BOT_STATE,
         )
-        await degraded_task
 
+        try:
+            telegram_task = asyncio.create_task(
+                _run_telegram(tg_client, logger)
+            )
+            await telegram_task
+
+            logger.event(
+                "TG_TASK_ENDED",
+                detail="Telegram terminó. Bot continúa en modo degradado.",
+            )
+        except KeyboardInterrupt:
+            raise
+
+    # Mantener bot vivo por degraded loop
+    try:
+        await degraded_task
     except KeyboardInterrupt:
         raise
     finally:
