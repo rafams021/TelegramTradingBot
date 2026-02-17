@@ -1,9 +1,9 @@
 # config/settings.py
 """
 Configuración centralizada del bot con validación.
-Migrado desde config.py con mejoras de type safety.
 
-FASE C - LIMPIEZA: Agrega MAX_OPEN_POSITIONS a TradingConfig.
+FASE C: Agrega MAX_OPEN_POSITIONS
+FASE AUTONOMOUS: Agrega SCAN_INTERVAL
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -12,19 +12,16 @@ import os
 
 @dataclass(frozen=True)
 class TelegramConfig:
-    """Configuración de Telegram."""
     api_id: int
     api_hash: str
     session_name: str
     channel_id: int
-
     edit_reprocess_window_s: int = 180
     edit_reprocess_max_attempts: int = 3
 
 
 @dataclass(frozen=True)
 class MT5Config:
-    """Configuración de MetaTrader 5."""
     login: int
     password: str
     server: str
@@ -32,63 +29,41 @@ class MT5Config:
 
 @dataclass(frozen=True)
 class TradingConfig:
-    """Configuración de trading."""
     symbol: str
     volume_per_order: float
     deviation: int
     magic: int
-
-    # Política de drift
     hard_drift: float
     max_splits: int
     pending_timeout_min: int
-
-    # Tolerancias de ejecución
     buy_up_tol: float
     buy_down_tol: float
     sell_down_tol: float
     sell_up_tol: float
-
-    # Buffers adicionales
     extra_slippage: float = 0.10
     be_buffer: float = 0.0
     close_at_buffer: float = 0.0
     stop_extra_buffer: float = 0.0
-
-    # Risk management
-    max_open_positions: int = 5  # 0 = sin límite
+    max_open_positions: int = 5       # 0 = sin límite
+    scan_interval: int = 300          # segundos entre cada scan autónomo
 
 
 @dataclass(frozen=True)
 class AppConfig:
-    """Configuración completa de la aplicación."""
     use_real_account: bool
     dry_run: bool
     log_file: str
-
     telegram: TelegramConfig
     mt5: MT5Config
     trading: TradingConfig
 
 
-# =========================
-# Factory functions
-# =========================
-
 def _create_demo_mt5_config() -> MT5Config:
-    return MT5Config(
-        login=1022962,
-        password="",
-        server="VTMarkets-Demo"
-    )
+    return MT5Config(login=1022962, password="", server="VTMarkets-Demo")
 
 
 def _create_real_mt5_config() -> MT5Config:
-    return MT5Config(
-        login=77034995,
-        password="real_pass",
-        server="RoboForex-ECN"
-    )
+    return MT5Config(login=77034995, password="real_pass", server="RoboForex-ECN")
 
 
 def _create_demo_trading_config() -> TradingConfig:
@@ -107,6 +82,7 @@ def _create_demo_trading_config() -> TradingConfig:
         extra_slippage=0.10,
         be_buffer=0.0,
         max_open_positions=5,
+        scan_interval=300,
     )
 
 
@@ -126,6 +102,7 @@ def _create_real_trading_config() -> TradingConfig:
         extra_slippage=0.10,
         be_buffer=0.0,
         max_open_positions=5,
+        scan_interval=300,
     )
 
 
@@ -143,7 +120,6 @@ def _create_telegram_config() -> TelegramConfig:
 def create_app_config(use_real: Optional[bool] = None) -> AppConfig:
     if use_real is None:
         use_real = os.getenv("USE_REAL_ACCOUNT", "false").lower() == "true"
-
     return AppConfig(
         use_real_account=use_real,
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
@@ -153,10 +129,6 @@ def create_app_config(use_real: Optional[bool] = None) -> AppConfig:
         trading=_create_real_trading_config() if use_real else _create_demo_trading_config(),
     )
 
-
-# =========================
-# Global config instance
-# =========================
 
 CONFIG = create_app_config(use_real=False)
 
@@ -178,7 +150,6 @@ USE_REAL_ACCOUNT = CONFIG.use_real_account
 DRY_RUN = CONFIG.dry_run
 LOG_FILE = CONFIG.log_file
 
-# Telegram
 API_ID = CONFIG.telegram.api_id
 API_HASH = CONFIG.telegram.api_hash
 SESSION_NAME = CONFIG.telegram.session_name
@@ -186,12 +157,10 @@ CHANNEL_ID = CONFIG.telegram.channel_id
 TG_EDIT_REPROCESS_WINDOW_S = CONFIG.telegram.edit_reprocess_window_s
 TG_EDIT_REPROCESS_MAX_ATTEMPTS = CONFIG.telegram.edit_reprocess_max_attempts
 
-# MT5
 MT5_LOGIN = CONFIG.mt5.login
 MT5_PASSWORD = CONFIG.mt5.password
 MT5_SERVER = CONFIG.mt5.server
 
-# Trading
 SYMBOL = CONFIG.trading.symbol
 VOLUME_PER_ORDER = CONFIG.trading.volume_per_order
 DEVIATION = CONFIG.trading.deviation
@@ -205,4 +174,5 @@ SELL_DOWN_TOL = CONFIG.trading.sell_down_tol
 SELL_UP_TOL = CONFIG.trading.sell_up_tol
 EXTRA_SLIPPAGE = CONFIG.trading.extra_slippage
 BE_BUFFER = CONFIG.trading.be_buffer
-MAX_OPEN_POSITIONS = CONFIG.trading.max_open_positions  # ← NUEVO
+MAX_OPEN_POSITIONS = CONFIG.trading.max_open_positions
+SCAN_INTERVAL = CONFIG.trading.scan_interval
