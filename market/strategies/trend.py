@@ -1,9 +1,8 @@
 # market/strategies/trend.py
 """
-Estrategia de Trend Following con pullbacks a SMA.
+Estrategia de Trend Following con pullbacks a SMA20.
 
-Detecta cuando el precio hace un pullback a la SMA20
-en dirección de la tendencia definida por SMA20 vs SMA50.
+TPs calculados con ATR + R:R mínimo garantizado.
 """
 from __future__ import annotations
 
@@ -12,29 +11,16 @@ from typing import Optional
 import pandas as pd
 
 from core.models import Signal
-from market.indicators import sma
+from market.indicators import sma, atr
 from .base import BaseStrategy
 
 
 class TrendStrategy(BaseStrategy):
     """
-    Estrategia de seguimiento de tendencia con pullbacks.
+    Setup BUY:  SMA20 > SMA50 + precio cerca de SMA20 desde arriba
+    Setup SELL: SMA20 < SMA50 + precio cerca de SMA20 desde abajo
 
-    Setup BUY (uptrend + pullback a SMA20):
-        - SMA20 > SMA50 (tendencia alcista confirmada)
-        - Precio actual cerca de SMA20 (dentro de proximity_pips)
-        - Precio viene desde arriba (pullback, no ruptura)
-        - Entry: SMA20 + entry_buffer
-        - SL: SMA20 - sl_buffer
-        - TPs: entry + tp_distances
-
-    Setup SELL (downtrend + pullback a SMA20):
-        - SMA20 < SMA50 (tendencia bajista confirmada)
-        - Precio actual cerca de SMA20 (dentro de proximity_pips)
-        - Precio viene desde abajo (pullback, no ruptura)
-        - Entry: SMA20 - entry_buffer
-        - SL: SMA20 + sl_buffer
-        - TPs: entry - tp_distances
+    TPs: max(ATR_multiple × ATR, min_rr × SL_distance)
     """
 
     def __init__(
@@ -46,92 +32,77 @@ class TrendStrategy(BaseStrategy):
         proximity_pips: float = 2.0,
         entry_buffer: float = 1.0,
         sl_buffer: float = 15.0,
-        tp_distances: list = None,
+        atr_period: int = 14,
+        atr_multiples: list = None,
+        min_rr_multiples: list = None,
     ):
-        """
-        Args:
-            symbol: Símbolo a operar
-            magic: Número mágico
-            fast_period: Período SMA rápida (default: 20)
-            slow_period: Período SMA lenta (default: 50)
-            proximity_pips: Distancia máxima a SMA20 para considerar pullback
-            entry_buffer: Buffer sobre/bajo SMA20 para entry
-            sl_buffer: Buffer bajo/sobre SMA20 para SL
-            tp_distances: Distancias en pips para TPs (default: [25, 50])
-        """
         super().__init__(symbol, magic)
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.proximity_pips = proximity_pips
         self.entry_buffer = entry_buffer
         self.sl_buffer = sl_buffer
-        self.tp_distances = tp_distances or [25.0, 50.0]
+        self.atr_period = atr_period
+        self.atr_multiples = atr_multiples or [1.0, 2.0, 3.0]
+        self.min_rr_multiples = min_rr_multiples or [1.5, 2.0, 3.0]
 
     @property
     def name(self) -> str:
         return "TREND"
 
-    def scan(
+    def _calculate_tps(
         self,
-        df: pd.DataFrame,
-        current_price: float,
-    ) -> Optional[Signal]:
-        """
-        Detecta pullbacks a SMA20 en dirección de la tendencia.
-        """
-        min_candles = self.slow_period + 1
+        side: str,
+        entry: float,
+        sl: float,
+        atr_value: float,
+    ) -> list:
+        sl_distance = abs(entry - sl)
+        tps = []
+        for atr_mult, rr_mult in zip(self.atr_multiples, self.min_rr_multiples):
+            tp_distance = max(atr_mult * atr_value, rr_mult * sl_distance)
+            if side == "BUY":
+                tps.append(round(entry + tp_distance, 2))
+            else:
+                tps.append(round(entry - tp_distance, 2))
+        return tps
+
+    def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
+        min_candles = max(self.slow_period + 1, self.atr_period + 1)
         if len(df) < min_candles:
             return None
 
-        # Calcular SMAs
         sma_fast = sma(df, self.fast_period)
         sma_slow = sma(df, self.slow_period)
 
         current_sma_fast = float(sma_fast.iloc[-1])
         current_sma_slow = float(sma_slow.iloc[-1])
 
-        # Verificar que las SMAs son válidas
         if pd.isna(current_sma_fast) or pd.isna(current_sma_slow):
             return None
 
-        distance_to_sma = abs(current_price - current_sma_fast)
+        if abs(current_price - current_sma_fast) > self.proximity_pips:
+            return None
 
-        # Si el precio no está cerca de la SMA20, no hay pullback
-        if distance_to_sma > self.proximity_pips:
+        atr_series = atr(df, period=self.atr_period)
+        atr_value = float(atr_series.iloc[-1])
+        if pd.isna(atr_value) or atr_value <= 0:
             return None
 
         msg_id = int(df.index[-1].timestamp())
 
-        # UPTREND: SMA20 > SMA50 → buscar BUY en pullback
-        if current_sma_fast > current_sma_slow:
-            # Confirmar que el precio viene desde arriba (pullback real)
-            if current_price >= current_sma_fast:
-                entry = current_sma_fast + self.entry_buffer
-                sl = current_sma_fast - self.sl_buffer
-                tps = [round(entry + d, 2) for d in self.tp_distances]
+        # UPTREND: BUY pullback a SMA20
+        if current_sma_fast > current_sma_slow and current_price >= current_sma_fast:
+            entry = round(current_sma_fast + self.entry_buffer, 2)
+            sl = round(current_sma_fast - self.sl_buffer, 2)
+            tps = self._calculate_tps("BUY", entry, sl, atr_value)
+            return self._make_signal("BUY", entry, sl, tps, msg_id)
 
-                return self._make_signal(
-                    side="BUY",
-                    entry=round(entry, 2),
-                    sl=round(sl, 2),
-                    tps=tps,
-                    msg_id=msg_id,
-                )
-
-        # DOWNTREND: SMA20 < SMA50 → buscar SELL en pullback
-        elif current_sma_fast < current_sma_slow:
-            # Confirmar que el precio viene desde abajo (pullback real)
-            if current_price <= current_sma_fast:
-                entry = current_sma_fast - self.entry_buffer
-                sl = current_sma_fast + self.sl_buffer
-                tps = [round(entry - d, 2) for d in self.tp_distances]
-
-                return self._make_signal(
-                    side="SELL",
-                    entry=round(entry, 2),
-                    sl=round(sl, 2),
-                    tps=tps,
-                    msg_id=msg_id,
-                )
+        # DOWNTREND: SELL pullback a SMA20
+        if current_sma_fast < current_sma_slow and current_price <= current_sma_fast:
+            entry = round(current_sma_fast - self.entry_buffer, 2)
+            sl = round(current_sma_fast + self.sl_buffer, 2)
+            tps = self._calculate_tps("SELL", entry, sl, atr_value)
+            return self._make_signal("SELL", entry, sl, tps, msg_id)
 
         return None

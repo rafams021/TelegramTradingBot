@@ -2,8 +2,7 @@
 """
 Estrategia de Breakout.
 
-Detecta cuando el precio rompe por encima del máximo reciente (BUY)
-o por debajo del mínimo reciente (SELL) con confirmación de volumen.
+TPs calculados con ATR + R:R mínimo garantizado.
 """
 from __future__ import annotations
 
@@ -12,25 +11,17 @@ from typing import Optional
 import pandas as pd
 
 from core.models import Signal
-from market.indicators import recent_high, recent_low
+from market.indicators import recent_high, recent_low, atr
 from .base import BaseStrategy
 
 
 class BreakoutStrategy(BaseStrategy):
     """
-    Estrategia de ruptura de niveles recientes.
+    Setup BUY:  precio > high(N velas) + buffer → entry, SL bajo el high
+    Setup SELL: precio < low(N velas) - buffer  → entry, SL sobre el low
 
-    Setup BUY:
-        - Precio actual > máximo de las últimas N velas + buffer
-        - Entry: precio actual
-        - SL: máximo reciente - sl_buffer
-        - TPs: entry + tp_distances
-
-    Setup SELL:
-        - Precio actual < mínimo de las últimas N velas - buffer
-        - Entry: precio actual
-        - SL: mínimo reciente + sl_buffer
-        - TPs: entry - tp_distances
+    TPs: max(ATR_multiple × ATR, min_rr × SL_distance)
+    Garantiza TPs alcanzables (ATR) y rentables (R:R mínimo).
     """
 
     def __init__(
@@ -40,73 +31,91 @@ class BreakoutStrategy(BaseStrategy):
         lookback_candles: int = 24,
         breakout_buffer: float = 2.0,
         sl_buffer: float = 5.0,
-        tp_distances: list = None,
+        atr_period: int = 14,
+        atr_multiples: list = None,
+        min_rr_multiples: list = None,
     ):
         """
         Args:
             symbol: Símbolo a operar
             magic: Número mágico
-            lookback_candles: Velas para calcular high/low (default: 24 = 24h en H1)
-            breakout_buffer: Pips sobre el high/bajo del low para confirmar ruptura
-            sl_buffer: Pips entre el nivel roto y el SL
-            tp_distances: Lista de distancias en pips para TPs (default: [15, 30, 50])
+            lookback_candles: Velas para calcular high/low (default: 24h en H1)
+            breakout_buffer: Pips sobre high/bajo low para confirmar ruptura
+            sl_buffer: Pips entre nivel roto y SL
+            atr_period: Período del ATR (default: 14)
+            atr_multiples: Múltiplos de ATR para cada TP (default: [1.0, 2.0, 3.0])
+            min_rr_multiples: R:R mínimo por TP (default: [1.5, 2.0, 3.0])
         """
         super().__init__(symbol, magic)
         self.lookback_candles = lookback_candles
         self.breakout_buffer = breakout_buffer
         self.sl_buffer = sl_buffer
-        self.tp_distances = tp_distances or [15.0, 30.0, 50.0]
+        self.atr_period = atr_period
+        self.atr_multiples = atr_multiples or [1.0, 2.0, 3.0]
+        self.min_rr_multiples = min_rr_multiples or [1.5, 2.0, 3.0]
 
     @property
     def name(self) -> str:
         return "BREAKOUT"
 
-    def scan(
+    def _calculate_tps(
         self,
-        df: pd.DataFrame,
-        current_price: float,
-    ) -> Optional[Signal]:
+        side: str,
+        entry: float,
+        sl: float,
+        atr_value: float,
+    ) -> list:
         """
-        Detecta ruptura del rango reciente.
+        Calcula TPs usando ATR con R:R mínimo garantizado.
+
+        Cada TP = entry ± max(atr_multiple × ATR, min_rr × SL_distance)
         """
-        if len(df) < self.lookback_candles + 1:
+        sl_distance = abs(entry - sl)
+        tps = []
+
+        for atr_mult, rr_mult in zip(self.atr_multiples, self.min_rr_multiples):
+            atr_distance = atr_mult * atr_value
+            rr_distance = rr_mult * sl_distance
+            tp_distance = max(atr_distance, rr_distance)
+
+            if side == "BUY":
+                tp = round(entry + tp_distance, 2)
+            else:
+                tp = round(entry - tp_distance, 2)
+
+            tps.append(tp)
+
+        return tps
+
+    def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
+        min_candles = max(self.lookback_candles + 1, self.atr_period + 1)
+        if len(df) < min_candles:
             return None
 
-        # Calcular rango reciente (excluir la vela actual)
+        # Calcular rango excluyendo la vela actual
         high = recent_high(df.iloc[:-1], self.lookback_candles)
         low = recent_low(df.iloc[:-1], self.lookback_candles)
 
-        # Generar ID único basado en timestamp de la última vela
+        # Calcular ATR actual
+        atr_series = atr(df, period=self.atr_period)
+        atr_value = float(atr_series.iloc[-1])
+        if pd.isna(atr_value) or atr_value <= 0:
+            return None
+
         msg_id = int(df.index[-1].timestamp())
 
-        # BUY: precio rompe por encima del máximo
-        breakout_buy_level = high + self.breakout_buffer
-        if current_price > breakout_buy_level:
+        # BUY breakout
+        if current_price > high + self.breakout_buffer:
             entry = current_price
-            sl = high - self.sl_buffer
-            tps = [round(entry + d, 2) for d in self.tp_distances]
+            sl = round(high - self.sl_buffer, 2)
+            tps = self._calculate_tps("BUY", entry, sl, atr_value)
+            return self._make_signal("BUY", round(entry, 2), sl, tps, msg_id)
 
-            return self._make_signal(
-                side="BUY",
-                entry=round(entry, 2),
-                sl=round(sl, 2),
-                tps=tps,
-                msg_id=msg_id,
-            )
-
-        # SELL: precio rompe por debajo del mínimo
-        breakout_sell_level = low - self.breakout_buffer
-        if current_price < breakout_sell_level:
+        # SELL breakout
+        if current_price < low - self.breakout_buffer:
             entry = current_price
-            sl = low + self.sl_buffer
-            tps = [round(entry - d, 2) for d in self.tp_distances]
-
-            return self._make_signal(
-                side="SELL",
-                entry=round(entry, 2),
-                sl=round(sl, 2),
-                tps=tps,
-                msg_id=msg_id,
-            )
+            sl = round(low + self.sl_buffer, 2)
+            tps = self._calculate_tps("SELL", entry, sl, atr_value)
+            return self._make_signal("SELL", round(entry, 2), sl, tps, msg_id)
 
         return None
