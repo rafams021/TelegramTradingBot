@@ -14,6 +14,10 @@ ANALYTICS INTEGRADO:
 - Clasificación automática de estrategias
 - Medición de latency y slippage
 - Tracking de posiciones abiertas
+
+FASE C - LIMPIEZA:
+- Guard de MAX_OPEN_POSITIONS antes de ejecutar órdenes
+- Consulta MT5 directamente (no BotState) para evitar desincronización
 """
 from __future__ import annotations
 
@@ -64,6 +68,42 @@ def _current_price_for_side(side: str, bid: float, ask: float) -> float:
     return float(ask) if side_u == "BUY" else float(bid)
 
 
+def _check_max_positions(mt5: MT5Client, msg_id: int) -> bool:
+    """
+    Verifica si se puede abrir una nueva posición.
+
+    Consulta MT5 directamente para obtener el conteo real,
+    evitando depender del BotState que puede estar desincronizado.
+
+    Args:
+        mt5: Cliente MT5
+        msg_id: ID del mensaje (para logging)
+
+    Returns:
+        True si se puede abrir posición (bajo el límite)
+        False si se alcanzó MAX_OPEN_POSITIONS
+    """
+    max_positions = int(getattr(CFG, "MAX_OPEN_POSITIONS", 0) or 0)
+
+    # Si MAX_OPEN_POSITIONS es 0 o no está definido → sin límite
+    if max_positions <= 0:
+        return True
+
+    open_positions = mt5.get_all_positions()
+    current_count = len(open_positions)
+
+    if current_count >= max_positions:
+        logger.log_event({
+            "event": "MAX_POSITIONS_REACHED",
+            "msg_id": msg_id,
+            "current": current_count,
+            "max": max_positions,
+        })
+        return False
+
+    return True
+
+
 async def execute_signal(
     msg_id: int,
     text: str,
@@ -74,11 +114,11 @@ async def execute_signal(
 ) -> None:
     """
     Handler principal de mensajes de Telegram.
-    
+
     Procesa:
     1. Comandos de gestión (BE, CLOSE, MOVE_SL)
     2. Señales de trading (BUY/SELL con TPs y SL)
-    
+
     Args:
         msg_id: ID del mensaje de Telegram
         text: Contenido del mensaje
@@ -86,7 +126,7 @@ async def execute_signal(
         date_iso: Fecha del mensaje en formato ISO
         is_edit: Si es una edición de mensaje
         state: Estado global del bot
-    
+
     Note:
         Esta función ES async porque main.py la await-ea,
         pero internamente todo lo que hace es sync.
@@ -113,8 +153,7 @@ async def execute_signal(
     # 2. PROCESS SIGNAL (usando SignalService)
     # ==========================================
     signal_service = _get_signal_service(state)
-    
-    # METRICS: Medir tiempo de parseo
+
     parse_start = time.time()
     sig = signal_service.process_signal(
         msg_id=msg_id,
@@ -123,14 +162,11 @@ async def execute_signal(
         is_edit=is_edit,
     )
     parse_time_ms = (time.time() - parse_start) * 1000
-    
+
     if sig is None:
-        # METRICS: Track parse failed
         metrics.track_signal_failed(msg_id, "PARSE_FAILED")
-        # Signal processing failed (ya loggeado por el service)
         return
-    
-    # METRICS: Track signal parsed
+
     metrics.track_signal_parsed(
         msg_id=msg_id,
         side=sig.side,
@@ -144,14 +180,12 @@ async def execute_signal(
     # 3. VERIFY MT5 READY
     # ==========================================
     if not mt5 or not mt5.is_ready():
-        # METRICS: Track failed
         metrics.track_signal_failed(msg_id, "MT5_NOT_READY")
         logger.log_event({"event": "MT5_NOT_READY", "msg_id": msg_id})
         return
 
     tick = mt5.get_tick()
     if not tick:
-        # METRICS: Track failed
         metrics.track_signal_failed(msg_id, "MT5_NO_TICK")
         logger.log_event({"event": "MT5_NO_TICK", "msg_id": msg_id})
         return
@@ -162,14 +196,12 @@ async def execute_signal(
     current_price = _current_price_for_side(sig.side, tick.bid, tick.ask)
     mode = decide_execution_legacy(sig.side, sig.entry, current_price)
 
-    # METRICS: Track execution decision
     metrics.track_execution_decided(
         msg_id=msg_id,
         mode=mode,
         current_price=current_price,
     )
-    
-    # METRICS: Classify strategy
+
     timestamp = date_iso or datetime.now(timezone.utc).isoformat()
     classification = StrategyClassifier.classify_signal(
         entry=sig.entry,
@@ -178,41 +210,45 @@ async def execute_signal(
         current_price=current_price,
         timestamp=timestamp,
     )
-    
-    # METRICS: Update signal with classification
+
     if msg_id in metrics.signals:
         metrics.signals[msg_id].strategy = classification.get("style")
         metrics.signals[msg_id].session = classification.get("session")
         metrics.signals[msg_id].risk_reward_ratio = classification.get("risk_reward")
 
-    logger.log_event(
-        {
-            "event": "EXECUTION_DECIDED",
+    logger.log_event({
+        "event": "EXECUTION_DECIDED",
+        "msg_id": msg_id,
+        "side": sig.side,
+        "entry": sig.entry,
+        "bid": tick.bid,
+        "ask": tick.ask,
+        "current_price": current_price,
+        "mode": mode,
+    })
+
+    if mode == "SKIP":
+        metrics.track_signal_skipped(msg_id, "HARD_DRIFT")
+        logger.log_event({
+            "event": "SIGNAL_SKIPPED_HARD_DRIFT",
             "msg_id": msg_id,
             "side": sig.side,
             "entry": sig.entry,
             "bid": tick.bid,
             "ask": tick.ask,
             "current_price": current_price,
-            "mode": mode,
-        }
-    )
+        })
+        return
 
-    if mode == "SKIP":
-        # METRICS: Track skip
-        metrics.track_signal_skipped(msg_id, "HARD_DRIFT")
-        
-        logger.log_event(
-            {
-                "event": "SIGNAL_SKIPPED_HARD_DRIFT",
-                "msg_id": msg_id,
-                "side": sig.side,
-                "entry": sig.entry,
-                "bid": tick.bid,
-                "ask": tick.ask,
-                "current_price": current_price,
-            }
-        )
+    # ==========================================
+    # 4.5 GUARD: MAX_OPEN_POSITIONS (Fase C)
+    # Se verifica DESPUÉS de decidir el modo pero
+    # ANTES de crear splits y ejecutar órdenes.
+    # Consulta MT5 directamente para evitar
+    # depender del BotState desincronizado.
+    # ==========================================
+    if not _check_max_positions(mt5, msg_id):
+        metrics.track_signal_skipped(msg_id, "MAX_POSITIONS_REACHED")
         return
 
     # ==========================================
@@ -220,17 +256,14 @@ async def execute_signal(
     # ==========================================
     splits = signal_service.create_splits(sig)
 
-    # En ediciones, solo enviamos splits NUEVOS
     splits_to_send = [sp for sp in splits if getattr(sp, "status", None) == "NEW"]
     if not splits_to_send:
-        logger.log_event(
-            {
-                "event": "SIGNAL_NO_NEW_SPLITS",
-                "msg_id": msg_id,
-                "is_edit": is_edit,
-                "date": date_iso,
-            }
-        )
+        logger.log_event({
+            "event": "SIGNAL_NO_NEW_SPLITS",
+            "msg_id": msg_id,
+            "is_edit": is_edit,
+            "date": date_iso,
+        })
         return
 
     # ==========================================
@@ -239,23 +272,21 @@ async def execute_signal(
     for sp in splits_to_send:
         if signal_service.should_skip_tp(sig.side, sp.tp, tick.bid, tick.ask):
             sp.status = "CANCELED"
-            logger.log_event(
-                {
-                    "event": "SPLIT_SKIPPED_TP_ALREADY_REACHED",
-                    "signal_msg_id": msg_id,
-                    "split": sp.split_index,
-                    "tp": sp.tp,
-                    "bid": tick.bid,
-                    "ask": tick.ask,
-                }
-            )
+            logger.log_event({
+                "event": "SPLIT_SKIPPED_TP_ALREADY_REACHED",
+                "signal_msg_id": msg_id,
+                "split": sp.split_index,
+                "tp": sp.tp,
+                "bid": tick.bid,
+                "ask": tick.ask,
+            })
 
     # ==========================================
     # 7. EXECUTE ORDERS
     # ==========================================
     vol = float(getattr(CFG, "DEFAULT_LOT", 0.01))
-    executed_count = 0  # METRICS: Counter
-    
+    executed_count = 0
+
     for sp in splits_to_send:
         if sp.status != "NEW":
             continue
@@ -268,7 +299,7 @@ async def execute_signal(
             success = _execute_pending_order(sp, sig, vol, mode, msg_id, mt5, metrics)
             if success:
                 executed_count += 1
-    
+
     # ==========================================
     # METRICS: Track signal executed
     # ==========================================
@@ -291,30 +322,21 @@ def _execute_market_order(
 ) -> bool:
     """
     Ejecuta una orden a mercado.
-    
-    Args:
-        split: Split (SplitState) a ejecutar
-        signal: Señal original
-        volume: Volumen a operar
-        msg_id: ID del mensaje de Telegram
-        mt5: Cliente MT5
-        metrics: Metrics tracker
-    
+
     Returns:
         True si la orden fue exitosa
     """
     req, res = mt5.open_market(signal.side, volume=volume, sl=signal.sl, tp=split.tp)
-    
+
     split.last_req = req
     split.last_res = str(res)
-    
+
     success = False
     if res and getattr(res, "retcode", None) == 10009:
         split.status = "OPEN"
         split.position_ticket = getattr(res, "order", None)
         success = True
-        
-        # METRICS: Track position opened
+
         metrics.track_position_opened(
             signal_msg_id=msg_id,
             split_index=split.split_index,
@@ -329,19 +351,17 @@ def _execute_market_order(
     else:
         split.status = "ERROR"
 
-    logger.log_event(
-        {
-            "event": "MARKET_ORDER_SENT",
-            "signal_msg_id": msg_id,
-            "split": split.split_index,
-            "side": signal.side,
-            "vol": volume,
-            "sl": signal.sl,
-            "tp": split.tp,
-            "result": str(res),
-        }
-    )
-    
+    logger.log_event({
+        "event": "MARKET_ORDER_SENT",
+        "signal_msg_id": msg_id,
+        "split": split.split_index,
+        "side": signal.side,
+        "vol": volume,
+        "sl": signal.sl,
+        "tp": split.tp,
+        "result": str(res),
+    })
+
     return success
 
 
@@ -356,16 +376,7 @@ def _execute_pending_order(
 ) -> bool:
     """
     Ejecuta una orden pendiente (LIMIT o STOP).
-    
-    Args:
-        split: Split (SplitState) a ejecutar
-        signal: Señal original
-        volume: Volumen a operar
-        mode: Tipo de orden ("LIMIT" o "STOP")
-        msg_id: ID del mensaje de Telegram
-        mt5: Cliente MT5
-        metrics: Metrics tracker
-    
+
     Returns:
         True si la orden fue exitosa
     """
@@ -377,27 +388,24 @@ def _execute_pending_order(
         sl=signal.sl,
         tp=split.tp,
     )
-    
+
     split.last_req = req
     split.last_res = str(res)
-    
+
     success = False
     if res and getattr(res, "retcode", None) == 10009:
         split.status = "PENDING"
         split.order_ticket = getattr(res, "order", None)
         split.pending_created_ts = mt5.time_now()
         success = True
-        
-        # METRICS: Track position opened (pending order)
-        # Nota: Para pending orders, el ticket es order_ticket no position_ticket
-        # y entry_actual será None hasta que se active
+
         metrics.track_position_opened(
             signal_msg_id=msg_id,
             split_index=split.split_index,
             ticket=split.order_ticket,
             side=signal.side,
             entry_intended=signal.entry,
-            entry_actual=signal.entry,  # Para pending, es el precio de la orden
+            entry_actual=signal.entry,
             tp=split.tp,
             sl=signal.sl,
             volume=volume,
@@ -405,19 +413,17 @@ def _execute_pending_order(
     else:
         split.status = "ERROR"
 
-    logger.log_event(
-        {
-            "event": "PENDING_ORDER_SENT",
-            "signal_msg_id": msg_id,
-            "split": split.split_index,
-            "side": signal.side,
-            "mode": mode,
-            "entry": signal.entry,
-            "vol": volume,
-            "sl": signal.sl,
-            "tp": split.tp,
-            "result": str(res),
-        }
-    )
-    
+    logger.log_event({
+        "event": "PENDING_ORDER_SENT",
+        "signal_msg_id": msg_id,
+        "split": split.split_index,
+        "side": signal.side,
+        "mode": mode,
+        "entry": signal.entry,
+        "vol": volume,
+        "sl": signal.sl,
+        "tp": split.tp,
+        "result": str(res),
+    })
+
     return success

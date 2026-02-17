@@ -43,6 +43,7 @@ from .settings import (
     SELL_UP_TOL,
     EXTRA_SLIPPAGE,
     BE_BUFFER,
+    MAX_OPEN_POSITIONS,  # ← NUEVO
 )
 
 from .constants import (
@@ -75,6 +76,8 @@ __all__ = [
     "set_config",
     "create_app_config",
     "CONFIG",
+    # Trading params
+    "MAX_OPEN_POSITIONS",
     # Constants
     "MT5_RETCODE_SUCCESS",
     "MT5_RETCODE_INVALID_FILL",

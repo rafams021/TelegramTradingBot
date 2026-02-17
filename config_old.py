@@ -1,3 +1,7 @@
+# config_old.py
+# REFERENCIA HISTÓRICA - No usar en código nuevo
+# Usar config/settings.py
+
 # =========================
 # Environment switch
 # =========================
@@ -7,7 +11,7 @@ USE_REAL_ACCOUNT = False   # True = real | False = demo
 API_ID = 32919258
 API_HASH = "dfb662cee66fe7b2f337628eeac3316c"
 SESSION_NAME = "tg_session_qr"
-CHANNEL_ID = 2329472075  # channel/chat id (int)
+CHANNEL_ID = 2329472075
 
 if USE_REAL_ACCOUNT:
     # REAL
@@ -32,39 +36,36 @@ else:
 SYMBOL = "XAUUSD-ECN"
 VOLUME_PER_ORDER = 0.05
 DEVIATION = 50
-MAGIC = 6069104329  # ideally TG user_id
+MAGIC = 6069104329
 
 # Execution drift policy
-# XAUUSD-ECN usually 2 digits => 0.30 == $0.30
 BUY_UP_TOL = 0.30
 BUY_DOWN_TOL = 1.00
 SELL_DOWN_TOL = 0.30
 SELL_UP_TOL = 1.00
 
-
-# Optional extra cushion (available if you want to use it in rules.py)
+# Optional extra cushion
 EXTRA_SLIPPAGE = 0.10
 
 # Break-even buffer
 BE_BUFFER = 0.0
 
+# Risk management
+MAX_OPEN_POSITIONS = 5  # ← NUEVO: 0 = sin límite
+
 # =========================
 # Telegram edit handling
 # =========================
-
-# Typos / quick edits
 TG_EDIT_REPROCESS_WINDOW_S = 180
 TG_EDIT_REPROCESS_MAX_ATTEMPTS = 3
 
 # =========================
 # Logging
 # =========================
-
-LOG_FILE = "bot_events.jsonl"  # written in project root
+LOG_FILE = "bot_events.jsonl"
 
 # =========================
 # Dry run
 # =========================
-
 DRY_RUN = False
 

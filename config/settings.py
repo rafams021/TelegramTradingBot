@@ -2,6 +2,8 @@
 """
 Configuración centralizada del bot con validación.
 Migrado desde config.py con mejoras de type safety.
+
+FASE C - LIMPIEZA: Agrega MAX_OPEN_POSITIONS a TradingConfig.
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -15,8 +17,7 @@ class TelegramConfig:
     api_hash: str
     session_name: str
     channel_id: int
-    
-    # Configuración de edits
+
     edit_reprocess_window_s: int = 180
     edit_reprocess_max_attempts: int = 3
 
@@ -36,23 +37,26 @@ class TradingConfig:
     volume_per_order: float
     deviation: int
     magic: int
-    
+
     # Política de drift
     hard_drift: float
     max_splits: int
     pending_timeout_min: int
-    
+
     # Tolerancias de ejecución
     buy_up_tol: float
     buy_down_tol: float
     sell_down_tol: float
     sell_up_tol: float
-    
+
     # Buffers adicionales
     extra_slippage: float = 0.10
     be_buffer: float = 0.0
     close_at_buffer: float = 0.0
     stop_extra_buffer: float = 0.0
+
+    # Risk management
+    max_open_positions: int = 5  # 0 = sin límite
 
 
 @dataclass(frozen=True)
@@ -61,7 +65,7 @@ class AppConfig:
     use_real_account: bool
     dry_run: bool
     log_file: str
-    
+
     telegram: TelegramConfig
     mt5: MT5Config
     trading: TradingConfig
@@ -72,7 +76,6 @@ class AppConfig:
 # =========================
 
 def _create_demo_mt5_config() -> MT5Config:
-    """Configuración MT5 para cuenta DEMO."""
     return MT5Config(
         login=1022962,
         password="",
@@ -81,7 +84,6 @@ def _create_demo_mt5_config() -> MT5Config:
 
 
 def _create_real_mt5_config() -> MT5Config:
-    """Configuración MT5 para cuenta REAL."""
     return MT5Config(
         login=77034995,
         password="real_pass",
@@ -90,7 +92,6 @@ def _create_real_mt5_config() -> MT5Config:
 
 
 def _create_demo_trading_config() -> TradingConfig:
-    """Configuración de trading para cuenta DEMO."""
     return TradingConfig(
         symbol="XAUUSD-ECN",
         volume_per_order=0.05,
@@ -105,11 +106,11 @@ def _create_demo_trading_config() -> TradingConfig:
         sell_up_tol=1.00,
         extra_slippage=0.10,
         be_buffer=0.0,
+        max_open_positions=5,
     )
 
 
 def _create_real_trading_config() -> TradingConfig:
-    """Configuración de trading para cuenta REAL."""
     return TradingConfig(
         symbol="XAUUSD-ECN",
         volume_per_order=0.05,
@@ -124,11 +125,11 @@ def _create_real_trading_config() -> TradingConfig:
         sell_up_tol=1.00,
         extra_slippage=0.10,
         be_buffer=0.0,
+        max_open_positions=5,
     )
 
 
 def _create_telegram_config() -> TelegramConfig:
-    """Configuración de Telegram (igual para DEMO y REAL)."""
     return TelegramConfig(
         api_id=32919258,
         api_hash="dfb662cee66fe7b2f337628eeac3316c",
@@ -140,19 +141,9 @@ def _create_telegram_config() -> TelegramConfig:
 
 
 def create_app_config(use_real: Optional[bool] = None) -> AppConfig:
-    """
-    Crea la configuración completa de la aplicación.
-    
-    Args:
-        use_real: Si es True usa cuenta REAL, False usa DEMO.
-                 Si es None, lee de variable de entorno USE_REAL_ACCOUNT.
-    
-    Returns:
-        AppConfig configurado según el modo.
-    """
     if use_real is None:
         use_real = os.getenv("USE_REAL_ACCOUNT", "false").lower() == "true"
-    
+
     return AppConfig(
         use_real_account=use_real,
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
@@ -167,17 +158,14 @@ def create_app_config(use_real: Optional[bool] = None) -> AppConfig:
 # Global config instance
 # =========================
 
-# Configuración por defecto (DEMO mode)
 CONFIG = create_app_config(use_real=False)
 
 
 def get_config() -> AppConfig:
-    """Obtiene la configuración actual de la aplicación."""
     return CONFIG
 
 
 def set_config(config: AppConfig) -> None:
-    """Actualiza la configuración de la aplicación."""
     global CONFIG
     CONFIG = config
 
@@ -185,7 +173,6 @@ def set_config(config: AppConfig) -> None:
 # =========================
 # Backward compatibility
 # =========================
-# Para que el código antiguo siga funcionando durante la migración
 
 USE_REAL_ACCOUNT = CONFIG.use_real_account
 DRY_RUN = CONFIG.dry_run
@@ -218,3 +205,4 @@ SELL_DOWN_TOL = CONFIG.trading.sell_down_tol
 SELL_UP_TOL = CONFIG.trading.sell_up_tol
 EXTRA_SLIPPAGE = CONFIG.trading.extra_slippage
 BE_BUFFER = CONFIG.trading.be_buffer
+MAX_OPEN_POSITIONS = CONFIG.trading.max_open_positions  # ← NUEVO
