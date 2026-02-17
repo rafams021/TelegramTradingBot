@@ -209,6 +209,37 @@ def support_resistance(df: pd.DataFrame, lookback: int = 20) -> List[float]:
     return sorted(levels)
 
 
+# ── Filtro de sesión (compartido por todas las estrategias) ──
+def is_valid_session(ts: pd.Timestamp, session_filter: str = "24h") -> bool:
+    """
+    Verifica si el timestamp está en sesión válida de trading.
+    
+    Args:
+        ts: Timestamp UTC de la vela
+        session_filter: Tipo de filtro
+            - "24h": opera 24/5 (default)
+            - "eu_ny": solo Europa+NY (08:00-22:00 UTC)
+            - "ny_only": solo NY (13:00-22:00 UTC)
+    
+    Returns:
+        True si está en sesión válida
+    """
+    if session_filter == "24h":
+        return True
+    
+    hour_utc = ts.hour
+    
+    if session_filter == "eu_ny":
+        # Europa abre 08:00, NY cierra 22:00 UTC
+        return 8 <= hour_utc < 22
+    
+    if session_filter == "ny_only":
+        # NY: 13:00-22:00 UTC
+        return 13 <= hour_utc < 22
+    
+    return True  # default: operar siempre
+
+
 # ── Filtro EMA duro (compartido por todas las estrategias) ──
 def check_ema_hard(window: pd.DataFrame, side: str) -> bool:
     """
@@ -230,17 +261,17 @@ def scan_breakout(
     df_d1: pd.DataFrame,
     i: int,
     ema_filter: bool = False,
+    debug: bool = False,
 ) -> Optional[BacktestTrade]:
     """
-    Breakout de zona D1 simplificado.
+    Breakout de zona D1 con entrada MARKET.
     
-    Setup SELL: precio actual < daily_low - buffer
-                → entrada LIMIT en daily_low (pullback)
-    Setup BUY:  precio actual > daily_high + buffer
-                → entrada LIMIT en daily_high (pullback)
+    Setup SELL: precio cruza daily_low - buffer
+                → SELL MARKET inmediatamente
+    Setup BUY:  precio cruza daily_high + buffer
+                → BUY MARKET inmediatamente
     
-    Sin filtro de frescura ni max_chase — si el precio está en zona
-    de breakout, asume que el movimiento es válido.
+    SL se coloca desde el nivel D1, no desde current_price.
     """
     if i < 30:
         return None
@@ -256,18 +287,27 @@ def scan_breakout(
     # High/Low del día anterior desde D1
     d1_before = df_d1[df_d1.index < ts]
     if len(d1_before) < 2:
+        if debug and i == 500:
+            print(f"DEBUG [{i}]: D1 data insuficiente, len={len(d1_before)}")
         return None
+    
     prev_day = d1_before.iloc[-1]
     daily_high = float(prev_day["high"])
     daily_low  = float(prev_day["low"])
 
-    breakout_buffer = 2.0
+    breakout_buffer = -5.0  # Negativo = entrar DENTRO del rango
+    sell_level = daily_low - breakout_buffer  # daily_low + 5
+    buy_level  = daily_high + breakout_buffer  # daily_high - 5
 
-    # SELL BREAKOUT
-    sell_level = daily_low - breakout_buffer
+    if debug and i == 500:
+        print(f"DEBUG [{i}]: current_price={current_price:.2f}, "
+              f"sell_level={sell_level:.2f}, buy_level={buy_level:.2f}, "
+              f"daily_high={daily_high:.2f}, daily_low={daily_low:.2f}")
+
+    # SELL BREAKOUT — entrada MARKET, SL desde daily_low
     if current_price < sell_level:
-        entry = round(daily_low, 2)
-        sl = calc_sl("SELL", entry)
+        entry = round(current_price, 2)
+        sl = round(daily_low + _SL_DISTANCE, 2)  # SL encima del nivel roto
         tp1, tp2, tp3 = calc_tps("SELL", entry)
         if ema_filter and not check_ema_hard(window, "SELL"):
             return None
@@ -277,11 +317,10 @@ def scan_breakout(
             entry_time=ts,
         )
 
-    # BUY BREAKOUT
-    buy_level = daily_high + breakout_buffer
+    # BUY BREAKOUT — entrada MARKET, SL desde daily_high
     if current_price > buy_level:
-        entry = round(daily_high, 2)
-        sl = calc_sl("BUY", entry)
+        entry = round(current_price, 2)
+        sl = round(daily_high - _SL_DISTANCE, 2)  # SL debajo del nivel roto
         tp1, tp2, tp3 = calc_tps("BUY", entry)
         if ema_filter and not check_ema_hard(window, "BUY"):
             return None
@@ -295,13 +334,17 @@ def scan_breakout(
 
 
 # ── Reversal ──
-def scan_reversal(df_h1: pd.DataFrame, i: int, ema_filter: bool = False) -> Optional[BacktestTrade]:
+def scan_reversal(df_h1: pd.DataFrame, i: int, ema_filter: bool = False, session_filter: str = "24h") -> Optional[BacktestTrade]:
     if i < 30:
         return None
 
     window = df_h1.iloc[max(0, i - 100):i + 1].copy()
     current_price = float(window["close"].iloc[-1])
     ts = window.index[-1]
+
+    # Filtro de sesión
+    if not is_valid_session(ts, session_filter):
+        return None
 
     levels = support_resistance(window, lookback=20)
     if not levels:
@@ -344,13 +387,17 @@ def scan_reversal(df_h1: pd.DataFrame, i: int, ema_filter: bool = False) -> Opti
 
 
 # ── Trend ──
-def scan_trend(df_h1: pd.DataFrame, i: int, ema_filter: bool = False) -> Optional[BacktestTrade]:
+def scan_trend(df_h1: pd.DataFrame, i: int, ema_filter: bool = False, session_filter: str = "24h") -> Optional[BacktestTrade]:
     if i < 55:
         return None
 
     window = df_h1.iloc[max(0, i - 100):i + 1].copy()
     current_price = float(window["close"].iloc[-1])
     ts = window.index[-1]
+
+    # Filtro de sesión
+    if not is_valid_session(ts, session_filter):
+        return None
 
     sma20 = float(sma(window["close"], 20).iloc[-1])
     sma50 = float(sma(window["close"], 50).iloc[-1])
@@ -487,6 +534,8 @@ def run_backtest(
     cooldown_bars: int = 3,
     tp1_only: bool = False,
     ema_filter: bool = False,
+    session_filter: str = "24h",
+    fix_lookahead: bool = False,
 ) -> List[BacktestResult]:
     """
     Recorre las velas una por una simulando el bot.
@@ -494,19 +543,45 @@ def run_backtest(
     cooldown_bars: velas de cooldown entre señales de la misma estrategia
     tp1_only: si True, cierra todo en TP1 (ignora TP2/TP3)
     ema_filter: si True, aplica filtro EMA 50/200 duro
+    session_filter: "24h", "eu_ny", "ny_only"
+    fix_lookahead: si True, entrada en vela i+1 (honest backtest)
     """
     results = {s: BacktestResult(strategy=s) for s in strategies}
     last_signal_bar = {s: -cooldown_bars for s in strategies}
 
+    # Debug Breakout
+    breakout_near_buy = 0
+    breakout_near_sell = 0
+
     mode_label = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
     ema_label  = " + EMA FILTER" if ema_filter else ""
+    session_label = f" | {session_filter.upper()}" if session_filter != "24h" else ""
+    lookahead_label = " | NO LOOKAHEAD" if fix_lookahead else ""
     total = len(df_h1)
-    print(f"\n⏳ Procesando {total} velas... [{mode_label}{ema_label}]")
+    print(f"\n⏳ Procesando {total} velas... [{mode_label}{ema_label}{session_label}{lookahead_label}]")
 
     for i in range(200, total - 1):
         if i % 500 == 0:
             pct = i / total * 100
             print(f"   {pct:.0f}% — vela {i}/{total}", end="\r")
+
+        # Debug Breakout levels
+        if "BREAKOUT" in strategies and i > 30:
+            ts = df_h1.index[i]
+            current_price = float(df_h1["close"].iloc[i])
+            d1_before = df_d1[df_d1.index < ts]
+            if len(d1_before) >= 2:
+                prev_day = d1_before.iloc[-1]
+                daily_high = float(prev_day["high"])
+                daily_low = float(prev_day["low"])
+                buy_level = daily_high + 2.0
+                sell_level = daily_low - 2.0
+                
+                # Contar qué tan cerca está
+                if current_price > (buy_level - 10):
+                    breakout_near_buy += 1
+                if current_price < (sell_level + 10):
+                    breakout_near_sell += 1
 
         for strategy in strategies:
             if i - last_signal_bar[strategy] < cooldown_bars:
@@ -515,18 +590,47 @@ def run_backtest(
             trade = None
 
             if strategy == "BREAKOUT":
-                trade = scan_breakout(df_h1, df_d1, i, ema_filter=ema_filter)
+                trade = scan_breakout(df_h1, df_d1, i, ema_filter=ema_filter, debug=(i==500))
             elif strategy == "REVERSAL":
-                trade = scan_reversal(df_h1, i, ema_filter=ema_filter)
+                trade = scan_reversal(df_h1, i, ema_filter=ema_filter, session_filter=session_filter)
             elif strategy == "TREND":
-                trade = scan_trend(df_h1, i, ema_filter=ema_filter)
+                trade = scan_trend(df_h1, i, ema_filter=ema_filter, session_filter=session_filter)
 
             if trade is not None:
-                trade = simulate_exit(trade, df_h1, i, tp1_only=tp1_only)
-                results[strategy].trades.append(trade)
-                last_signal_bar[strategy] = i
+                if fix_lookahead:
+                    # Corregir lookahead: señal en vela i, entrada en vela i+1
+                    # Usar el OPEN de la siguiente vela como entrada realista
+                    if i + 1 < len(df_h1):
+                        actual_entry = float(df_h1["open"].iloc[i + 1])
+                        # Recalcular SL y TPs desde la entrada real
+                        if trade.side == "BUY":
+                            trade.sl = round(actual_entry - _SL_DISTANCE, 2)
+                        else:
+                            trade.sl = round(actual_entry + _SL_DISTANCE, 2)
+                        trade.entry = round(actual_entry, 2)
+                        trade.tp1, trade.tp2, trade.tp3 = (
+                            round(actual_entry + _TP_DISTANCES[0], 2) if trade.side == "BUY" else round(actual_entry - _TP_DISTANCES[0], 2),
+                            round(actual_entry + _TP_DISTANCES[1], 2) if trade.side == "BUY" else round(actual_entry - _TP_DISTANCES[1], 2),
+                            round(actual_entry + _TP_DISTANCES[2], 2) if trade.side == "BUY" else round(actual_entry - _TP_DISTANCES[2], 2),
+                        )
+                        # Simular salida desde i+1
+                        trade = simulate_exit(trade, df_h1, i + 1, tp1_only=tp1_only)
+                        results[strategy].trades.append(trade)
+                        last_signal_bar[strategy] = i
+                else:
+                    # Lookahead presente: entrada en misma vela i
+                    trade = simulate_exit(trade, df_h1, i, tp1_only=tp1_only)
+                    results[strategy].trades.append(trade)
+                    last_signal_bar[strategy] = i
 
     print(f"   100% — {total} velas procesadas ✅")
+    
+    # Debug Breakout
+    if "BREAKOUT" in strategies:
+        print(f"\n🔍 DEBUG BREAKOUT:")
+        print(f"   Velas a <$10 de BUY level:  {breakout_near_buy}")
+        print(f"   Velas a <$10 de SELL level: {breakout_near_sell}")
+    
     return list(results.values())
 
 
@@ -534,11 +638,13 @@ def run_backtest(
 # REPORTE
 # ══════════════════════════════════════════════════
 
-def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1_only: bool = False, ema_filter: bool = False) -> None:
+def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1_only: bool = False, ema_filter: bool = False, session_filter: str = "24h", fix_lookahead: bool = False) -> None:
     mode = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
     ema  = " | EMA FILTER" if ema_filter else ""
+    session = f" | {session_filter.upper()}" if session_filter != "24h" else ""
+    lookahead = " | NO LOOKAHEAD" if fix_lookahead else ""
     print("\n" + "═" * 60)
-    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}{ema}]")
+    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}{ema}{session}{lookahead}]")
     print(f"  SL=${_SL_DISTANCE} | TP={_TP_DISTANCES} | RR={_TP_DISTANCES[0]/_SL_DISTANCE:.2f}:1")
     print("═" * 60)
 
@@ -632,6 +738,11 @@ def main():
                         help="Cerrar todo en TP1, ignorar TP2/TP3")
     parser.add_argument("--ema-filter",   action="store_true",
                         help="Filtro EMA 50/200 duro (bloquea señales contra tendencia)")
+    parser.add_argument("--session",      type=str,   default="24h",
+                        choices=["24h", "eu_ny", "ny_only"],
+                        help="Filtro de sesión: 24h (default), eu_ny (08-22 UTC), ny_only (13-22 UTC)")
+    parser.add_argument("--fix-lookahead", action="store_true",
+                        help="Entrada en vela i+1 (realista) en vez de vela i")
     parser.add_argument("--sl-distance",  type=float, default=6.0,
                         help="Distancia del SL en dólares (default: 6.0)")
     parser.add_argument("--tp1-distance", type=float, default=5.0,
@@ -668,8 +779,10 @@ def main():
         print(f"❌ Estrategia inválida: {args.strategy}")
         sys.exit(1)
 
-    tp1_only   = args.tp1_only
-    ema_filter = args.ema_filter
+    tp1_only       = args.tp1_only
+    ema_filter     = args.ema_filter
+    session_filter = args.session
+    fix_lookahead  = args.fix_lookahead
 
     # Descargar datos
     df_h1 = get_historical_data(args.timeframe, args.months)
@@ -681,10 +794,12 @@ def main():
         cooldown_bars=args.cooldown,
         tp1_only=tp1_only,
         ema_filter=ema_filter,
+        session_filter=session_filter,
+        fix_lookahead=fix_lookahead,
     )
 
     # Mostrar reporte
-    print_report(results, args.timeframe, args.months, tp1_only=tp1_only, ema_filter=ema_filter)
+    print_report(results, args.timeframe, args.months, tp1_only=tp1_only, ema_filter=ema_filter, session_filter=session_filter, fix_lookahead=fix_lookahead)
 
     # Guardar CSV si se pidió
     if args.csv:

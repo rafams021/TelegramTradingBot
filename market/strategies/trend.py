@@ -4,6 +4,14 @@ Estrategia de Trend Following con pullbacks a SMA20.
 
 Entrada: MARKET en toque de SMA20.
 SL/TP: Fijos desde config (sl_distance, tp_distances).
+
+OPTIMIZADO (backtest 6 meses):
+- session_filter: EU+NY (08:00-22:00 UTC)
+
+Resultados esperados:
+- Win rate: ~51%
+- P&L: ~$0.95/trade
+- Mejor performer de las dos estrategias activas
 """
 from __future__ import annotations
 
@@ -46,9 +54,33 @@ class TrendStrategy(BaseStrategy):
         else:
             return [round(entry - d, 2) for d in distances]
 
+    def _is_valid_session(self, ts: pd.Timestamp) -> bool:
+        """
+        Filtro de sesión: solo Europa + NY (08:00-22:00 UTC).
+        """
+        session_filter = getattr(CFG, "SESSION_FILTER", "24h")
+        
+        if session_filter == "24h":
+            return True
+        
+        hour_utc = ts.hour
+        
+        if session_filter == "eu_ny":
+            return 8 <= hour_utc < 22
+        
+        if session_filter == "ny_only":
+            return 13 <= hour_utc < 22
+        
+        return True
+
     def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
         min_candles = max(self.slow_period + 1, self.atr_period + 1)
         if len(df) < min_candles:
+            return None
+
+        # Filtro de sesión
+        ts = df.index[-1]
+        if not self._is_valid_session(ts):
             return None
 
         sma_fast = sma(df, self.fast_period)

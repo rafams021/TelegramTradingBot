@@ -4,6 +4,12 @@ Orquestador principal del análisis de mercado.
 
 MarketAnalyzer coordina DataProvider y las estrategias para
 generar señales de trading de forma autónoma.
+
+CONFIGURACIÓN OPTIMIZADA (basada en backtest 6 meses):
+- Solo Reversal y Trend (Breakout descartado: 4.4% win rate)
+- Sesión EU+NY (08:00-22:00 UTC)
+- Win rate esperado: ~48%
+- P&L esperado: ~$0.60/trade después de spread
 """
 from __future__ import annotations
 
@@ -14,7 +20,7 @@ from core.models import Signal
 from infrastructure.logging import get_logger
 
 from .data_provider import DataProvider
-from .strategies import BreakoutStrategy, ReversalStrategy, TrendStrategy
+from .strategies import ReversalStrategy, TrendStrategy
 
 
 class MarketAnalyzer:
@@ -58,11 +64,9 @@ class MarketAnalyzer:
         self.data_provider = DataProvider(self.symbol)
 
         # Inicializar estrategias activas
+        # NOTA: BreakoutStrategy removida después de backtest
+        # (4.4% win rate, -$609 en 6 meses)
         self.strategies = [
-            BreakoutStrategy(
-                symbol=self.symbol,
-                magic=self.magic,
-            ),
             ReversalStrategy(
                 symbol=self.symbol,
                 magic=self.magic,

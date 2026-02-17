@@ -5,6 +5,7 @@ Configuración centralizada del bot con validación.
 FASE C: Agrega MAX_OPEN_POSITIONS
 FASE AUTONOMOUS: Agrega SCAN_INTERVAL
 FASE MOMENTUM: Agrega sl_distance, tp_distances para SL/TP fijos
+FASE OPTIMIZED: Agrega SESSION_FILTER (EU+NY)
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -50,6 +51,8 @@ class TradingConfig:
     # ── SL/TP fijos para estrategias autónomas ──
     sl_distance: float = 6.0              # $6 desde entry
     tp_distances: tuple = (5.0, 11.0, 16.0)  # TP1=$5, TP2=$11, TP3=$16
+    # ── Filtro de sesión (optimizado en backtest) ──
+    session_filter: str = "eu_ny"         # "24h" | "eu_ny" | "ny_only"
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,7 @@ def _create_demo_trading_config() -> TradingConfig:
         scan_interval=300,
         sl_distance=6.0,
         tp_distances=(5.0, 11.0, 16.0),
+        session_filter="eu_ny",  # Optimizado: solo EU+NY (08:00-22:00 UTC)
     )
 
 
@@ -111,6 +115,7 @@ def _create_real_trading_config() -> TradingConfig:
         scan_interval=300,
         sl_distance=6.0,
         tp_distances=(5.0, 11.0, 16.0),
+        session_filter="eu_ny",  # Optimizado: solo EU+NY (08:00-22:00 UTC)
     )
 
 
@@ -186,3 +191,4 @@ MAX_OPEN_POSITIONS = CONFIG.trading.max_open_positions
 SCAN_INTERVAL = CONFIG.trading.scan_interval
 SL_DISTANCE = CONFIG.trading.sl_distance
 TP_DISTANCES = CONFIG.trading.tp_distances
+SESSION_FILTER = CONFIG.trading.session_filter
