@@ -209,11 +209,27 @@ def support_resistance(df: pd.DataFrame, lookback: int = 20) -> List[float]:
     return sorted(levels)
 
 
+# ── Filtro EMA duro (compartido por todas las estrategias) ──
+def check_ema_hard(window: pd.DataFrame, side: str) -> bool:
+    """
+    Verifica EMA50 > EMA200 para BUY, EMA50 < EMA200 para SELL.
+    Retorna True si pasa el filtro. True también si no hay datos.
+    """
+    if len(window) < 201:
+        return True
+    ema50  = float(ema_fn(window["close"], 50).iloc[-1])
+    ema200 = float(ema_fn(window["close"], 200).iloc[-1])
+    if pd.isna(ema50) or pd.isna(ema200):
+        return True
+    return (ema50 > ema200) if side == "BUY" else (ema50 < ema200)
+
+
 # ── Breakout ──
 def scan_breakout(
     df_h1: pd.DataFrame,
     df_d1: pd.DataFrame,
     i: int,
+    ema_filter: bool = False,
 ) -> Optional[BacktestTrade]:
     """Simula BreakoutStrategy en la vela i."""
     if i < 30:
@@ -263,6 +279,8 @@ def scan_breakout(
                 entry = round(daily_low, 2)
                 sl = calc_sl("SELL", entry)
                 tp1, tp2, tp3 = calc_tps("SELL", entry)
+                if ema_filter and not check_ema_hard(window, "SELL"):
+                    return None
                 return BacktestTrade(
                     strategy="BREAKOUT", side="SELL",
                     entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
@@ -284,6 +302,8 @@ def scan_breakout(
                 entry = round(daily_high, 2)
                 sl = calc_sl("BUY", entry)
                 tp1, tp2, tp3 = calc_tps("BUY", entry)
+                if ema_filter and not check_ema_hard(window, "BUY"):
+                    return None
                 return BacktestTrade(
                     strategy="BREAKOUT", side="BUY",
                     entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
@@ -293,7 +313,7 @@ def scan_breakout(
 
 
 # ── Reversal ──
-def scan_reversal(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
+def scan_reversal(df_h1: pd.DataFrame, i: int, ema_filter: bool = False) -> Optional[BacktestTrade]:
     if i < 30:
         return None
 
@@ -316,6 +336,8 @@ def scan_reversal(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
         return None
 
     if current_price <= closest and current_rsi < 45.0:
+        if ema_filter and not check_ema_hard(window, "BUY"):
+            return None
         entry = round(current_price, 2)
         sl = calc_sl("BUY", entry)
         tp1, tp2, tp3 = calc_tps("BUY", entry)
@@ -326,6 +348,8 @@ def scan_reversal(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
         )
 
     if current_price >= closest and current_rsi > 55.0:
+        if ema_filter and not check_ema_hard(window, "SELL"):
+            return None
         entry = round(current_price, 2)
         sl = calc_sl("SELL", entry)
         tp1, tp2, tp3 = calc_tps("SELL", entry)
@@ -338,7 +362,7 @@ def scan_reversal(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
 
 
 # ── Trend ──
-def scan_trend(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
+def scan_trend(df_h1: pd.DataFrame, i: int, ema_filter: bool = False) -> Optional[BacktestTrade]:
     if i < 55:
         return None
 
@@ -361,6 +385,8 @@ def scan_trend(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
         return None
 
     if sma20 > sma50 and current_price >= sma20:
+        if ema_filter and not check_ema_hard(window, "BUY"):
+            return None
         entry = round(current_price, 2)
         sl = calc_sl("BUY", entry)
         tp1, tp2, tp3 = calc_tps("BUY", entry)
@@ -371,6 +397,8 @@ def scan_trend(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
         )
 
     if sma20 < sma50 and current_price <= sma20:
+        if ema_filter and not check_ema_hard(window, "SELL"):
+            return None
         entry = round(current_price, 2)
         sl = calc_sl("SELL", entry)
         tp1, tp2, tp3 = calc_tps("SELL", entry)
@@ -476,19 +504,22 @@ def run_backtest(
     strategies: List[str],
     cooldown_bars: int = 3,
     tp1_only: bool = False,
+    ema_filter: bool = False,
 ) -> List[BacktestResult]:
     """
     Recorre las velas una por una simulando el bot.
 
     cooldown_bars: velas de cooldown entre señales de la misma estrategia
     tp1_only: si True, cierra todo en TP1 (ignora TP2/TP3)
+    ema_filter: si True, aplica filtro EMA 50/200 duro
     """
     results = {s: BacktestResult(strategy=s) for s in strategies}
     last_signal_bar = {s: -cooldown_bars for s in strategies}
 
     mode_label = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
+    ema_label  = " + EMA FILTER" if ema_filter else ""
     total = len(df_h1)
-    print(f"\n⏳ Procesando {total} velas... [{mode_label}]")
+    print(f"\n⏳ Procesando {total} velas... [{mode_label}{ema_label}]")
 
     for i in range(200, total - 1):
         if i % 500 == 0:
@@ -502,11 +533,11 @@ def run_backtest(
             trade = None
 
             if strategy == "BREAKOUT":
-                trade = scan_breakout(df_h1, df_d1, i)
+                trade = scan_breakout(df_h1, df_d1, i, ema_filter=ema_filter)
             elif strategy == "REVERSAL":
-                trade = scan_reversal(df_h1, i)
+                trade = scan_reversal(df_h1, i, ema_filter=ema_filter)
             elif strategy == "TREND":
-                trade = scan_trend(df_h1, i)
+                trade = scan_trend(df_h1, i, ema_filter=ema_filter)
 
             if trade is not None:
                 trade = simulate_exit(trade, df_h1, i, tp1_only=tp1_only)
@@ -521,10 +552,11 @@ def run_backtest(
 # REPORTE
 # ══════════════════════════════════════════════════
 
-def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1_only: bool = False) -> None:
+def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1_only: bool = False, ema_filter: bool = False) -> None:
     mode = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
+    ema  = " | EMA FILTER" if ema_filter else ""
     print("\n" + "═" * 60)
-    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}]")
+    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}{ema}]")
     print(f"  SL=${_SL_DISTANCE} | TP={_TP_DISTANCES} | RR={_TP_DISTANCES[0]/_SL_DISTANCE:.2f}:1")
     print("═" * 60)
 
@@ -616,6 +648,8 @@ def main():
                         help="Velas de cooldown entre señales (default: 3)")
     parser.add_argument("--tp1-only",     action="store_true",
                         help="Cerrar todo en TP1, ignorar TP2/TP3")
+    parser.add_argument("--ema-filter",   action="store_true",
+                        help="Filtro EMA 50/200 duro (bloquea señales contra tendencia)")
     parser.add_argument("--sl-distance",  type=float, default=6.0,
                         help="Distancia del SL en dólares (default: 6.0)")
     parser.add_argument("--tp1-distance", type=float, default=5.0,
@@ -652,17 +686,23 @@ def main():
         print(f"❌ Estrategia inválida: {args.strategy}")
         sys.exit(1)
 
-    tp1_only = args.tp1_only
+    tp1_only   = args.tp1_only
+    ema_filter = args.ema_filter
 
     # Descargar datos
     df_h1 = get_historical_data(args.timeframe, args.months)
     df_d1 = get_d1_data()
 
     # Correr backtest
-    results = run_backtest(df_h1, df_d1, strategies, cooldown_bars=args.cooldown, tp1_only=tp1_only)
+    results = run_backtest(
+        df_h1, df_d1, strategies,
+        cooldown_bars=args.cooldown,
+        tp1_only=tp1_only,
+        ema_filter=ema_filter,
+    )
 
     # Mostrar reporte
-    print_report(results, args.timeframe, args.months, tp1_only=tp1_only)
+    print_report(results, args.timeframe, args.months, tp1_only=tp1_only, ema_filter=ema_filter)
 
     # Guardar CSV si se pidió
     if args.csv:
