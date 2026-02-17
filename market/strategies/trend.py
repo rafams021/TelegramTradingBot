@@ -2,8 +2,8 @@
 """
 Estrategia de Trend Following con pullbacks a SMA20.
 
-SL: entry ± (sl_atr_multiple × ATR)
-TPs: ATR escalonado [0.5, 1.0, 2.0] con R:R mínimo [1.0, 1.5, 2.0].
+Entrada: MARKET en toque de SMA20.
+SL/TP: Fijos desde config (sl_distance, tp_distances).
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Optional
 
 import pandas as pd
 
+import config as CFG
 from core.models import Signal
 from market.indicators import sma, atr
 from .base import BaseStrategy
@@ -25,42 +26,25 @@ class TrendStrategy(BaseStrategy):
         fast_period: int = 20,
         slow_period: int = 50,
         proximity_pips: float = 2.0,
-        entry_buffer: float = 1.0,
-        sl_atr_multiple: float = 1.5,
         atr_period: int = 14,
-        atr_multiples: list = None,
-        min_rr_multiples: list = None,
     ):
         super().__init__(symbol, magic)
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.proximity_pips = proximity_pips
-        self.entry_buffer = entry_buffer
-        self.sl_atr_multiple = sl_atr_multiple
         self.atr_period = atr_period
-        self.atr_multiples = atr_multiples or [0.5, 1.0, 2.0]
-        self.min_rr_multiples = min_rr_multiples or [1.0, 1.5, 2.0]
 
     @property
     def name(self) -> str:
         return "TREND"
 
-    def _calculate_tps(
-        self,
-        side: str,
-        entry: float,
-        sl: float,
-        atr_value: float,
-    ) -> list:
-        sl_distance = abs(entry - sl)
-        tps = []
-        for atr_mult, rr_mult in zip(self.atr_multiples, self.min_rr_multiples):
-            tp_distance = max(atr_mult * atr_value, rr_mult * sl_distance)
-            if side == "BUY":
-                tps.append(round(entry + tp_distance, 2))
-            else:
-                tps.append(round(entry - tp_distance, 2))
-        return tps
+    def _calculate_tps(self, side: str, entry: float) -> list:
+        """TPs fijos desde config."""
+        distances = list(getattr(CFG, "TP_DISTANCES", (5.0, 11.0, 16.0)))
+        if side == "BUY":
+            return [round(entry + d, 2) for d in distances]
+        else:
+            return [round(entry - d, 2) for d in distances]
 
     def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
         min_candles = max(self.slow_period + 1, self.atr_period + 1)
@@ -76,29 +60,29 @@ class TrendStrategy(BaseStrategy):
         if pd.isna(current_sma_fast) or pd.isna(current_sma_slow):
             return None
 
-        if abs(current_price - current_sma_fast) > self.proximity_pips:
-            return None
-
         atr_series = atr(df, period=self.atr_period)
         atr_value = float(atr_series.iloc[-1])
         if pd.isna(atr_value) or atr_value <= 0:
             return None
 
-        msg_id = int(df.index[-1].timestamp())
-        sl_distance = self.sl_atr_multiple * atr_value
+        if abs(current_price - current_sma_fast) > self.proximity_pips:
+            return None
 
-        # UPTREND: BUY pullback a SMA20
+        sl_distance = float(getattr(CFG, "SL_DISTANCE", 6.0))
+        msg_id = int(df.index[-1].timestamp())
+
+        # UPTREND: BUY MARKET en toque de SMA20
         if current_sma_fast > current_sma_slow and current_price >= current_sma_fast:
-            entry = round(current_sma_fast + self.entry_buffer, 2)
+            entry = round(current_price, 2)
             sl = round(entry - sl_distance, 2)
-            tps = self._calculate_tps("BUY", entry, sl, atr_value)
+            tps = self._calculate_tps("BUY", entry)
             return self._make_signal("BUY", entry, sl, tps, msg_id)
 
-        # DOWNTREND: SELL pullback a SMA20
+        # DOWNTREND: SELL MARKET en toque de SMA20
         if current_sma_fast < current_sma_slow and current_price <= current_sma_fast:
-            entry = round(current_sma_fast - self.entry_buffer, 2)
+            entry = round(current_price, 2)
             sl = round(entry + sl_distance, 2)
-            tps = self._calculate_tps("SELL", entry, sl, atr_value)
+            tps = self._calculate_tps("SELL", entry)
             return self._make_signal("SELL", entry, sl, tps, msg_id)
 
         return None

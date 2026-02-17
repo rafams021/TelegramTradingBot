@@ -1,14 +1,14 @@
 # market/strategies/breakout.py
 """
-Estrategia de Breakout con filtros de calidad.
+Estrategia de Breakout.
 
-Filtros:
+Entrada: SELL/BUY LIMIT en el nivel roto (pullback).
+SL/TP: Fijos desde config (sl_distance, tp_distances).
+
+Filtros de calidad:
   1. Frescura: ruptura máximo fresh_candles velas atrás
-  2. Volumen: vela de ruptura > promedio de últimas N velas
-  3. No perseguir: precio no más de max_chase_atr × ATR desde el nivel roto
-
-SL: entry ± (sl_atr_multiple × ATR)
-TPs: ATR escalonado [0.5, 1.0, 2.0] con R:R mínimo [1.0, 1.5, 2.0]
+  2. Volumen: vela de ruptura > promedio × volume_factor
+  3. No perseguir: precio no más de max_chase_atr × ATR desde nivel
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Optional
 
 import pandas as pd
 
+import config as CFG
 from core.models import Signal
 from market.indicators import recent_high, recent_low, atr
 from .base import BaseStrategy
@@ -23,11 +24,11 @@ from .base import BaseStrategy
 
 class BreakoutStrategy(BaseStrategy):
     """
-    Setup BUY:  precio > high(N velas) + breakout_buffer
-                + ruptura fresca + volumen + no perseguir
-
     Setup SELL: precio < low(N velas) - breakout_buffer
-                + ruptura fresca + volumen + no perseguir
+                → SELL LIMIT en el nivel roto (pullback al low)
+
+    Setup BUY:  precio > high(N velas) + breakout_buffer
+                → BUY LIMIT en el nivel roto (pullback al high)
     """
 
     def __init__(
@@ -36,10 +37,7 @@ class BreakoutStrategy(BaseStrategy):
         magic: int,
         lookback_candles: int = 24,
         breakout_buffer: float = 2.0,
-        sl_atr_multiple: float = 1.5,
         atr_period: int = 14,
-        atr_multiples: list = None,
-        min_rr_multiples: list = None,
         # Filtro 1: Frescura
         fresh_candles: int = 2,
         # Filtro 2: Volumen
@@ -48,28 +46,10 @@ class BreakoutStrategy(BaseStrategy):
         # Filtro 3: No perseguir precio
         max_chase_atr: float = 1.0,
     ):
-        """
-        Args:
-            symbol: Símbolo a operar
-            magic: Número mágico
-            lookback_candles: Velas para detectar high/low (default: 24)
-            breakout_buffer: Pips sobre high/bajo low para confirmar ruptura
-            sl_atr_multiple: Múltiplo ATR para SL (default: 1.5)
-            atr_period: Período ATR (default: 14)
-            atr_multiples: Múltiplos ATR para TPs (default: [0.5, 1.0, 2.0])
-            min_rr_multiples: R:R mínimo por TP (default: [1.0, 1.5, 2.0])
-            fresh_candles: Máximo de velas desde la ruptura (default: 2)
-            volume_period: Velas para calcular volumen promedio (default: 20)
-            volume_factor: Factor mínimo sobre volumen promedio (default: 1.2)
-            max_chase_atr: Máximo drift desde el nivel en múltiplos ATR (default: 1.0)
-        """
         super().__init__(symbol, magic)
         self.lookback_candles = lookback_candles
         self.breakout_buffer = breakout_buffer
-        self.sl_atr_multiple = sl_atr_multiple
         self.atr_period = atr_period
-        self.atr_multiples = atr_multiples or [0.5, 1.0, 2.0]
-        self.min_rr_multiples = min_rr_multiples or [1.0, 1.5, 2.0]
         self.fresh_candles = fresh_candles
         self.volume_period = volume_period
         self.volume_factor = volume_factor
@@ -79,22 +59,13 @@ class BreakoutStrategy(BaseStrategy):
     def name(self) -> str:
         return "BREAKOUT"
 
-    def _calculate_tps(
-        self,
-        side: str,
-        entry: float,
-        sl: float,
-        atr_value: float,
-    ) -> list:
-        sl_distance = abs(entry - sl)
-        tps = []
-        for atr_mult, rr_mult in zip(self.atr_multiples, self.min_rr_multiples):
-            tp_distance = max(atr_mult * atr_value, rr_mult * sl_distance)
-            if side == "BUY":
-                tps.append(round(entry + tp_distance, 2))
-            else:
-                tps.append(round(entry - tp_distance, 2))
-        return tps
+    def _calculate_tps(self, side: str, entry: float) -> list:
+        """TPs fijos desde config."""
+        distances = list(getattr(CFG, "TP_DISTANCES", (5.0, 11.0, 16.0)))
+        if side == "BUY":
+            return [round(entry + d, 2) for d in distances]
+        else:
+            return [round(entry - d, 2) for d in distances]
 
     def _find_breakout_candle(
         self,
@@ -105,109 +76,86 @@ class BreakoutStrategy(BaseStrategy):
         """
         Busca la vela donde ocurrió la ruptura del nivel.
 
-        Busca hacia atrás desde la vela más reciente hasta
-        encontrar la primera vela que rompió el nivel.
-
         Returns:
-            Índice desde el final (0 = vela actual, 1 = anterior, etc.)
-            o None si no encuentra ruptura en las últimas fresh_candles+lookback velas
+            Índice desde el final (0 = más reciente) o None si no encuentra.
         """
         search_limit = min(self.fresh_candles + self.lookback_candles, len(df))
 
         for i in range(search_limit):
-            idx = -(i + 1)  # desde el final
+            idx = -(i + 1)
             candle = df.iloc[idx]
 
             if side == "SELL":
-                # Ruptura SELL: close de la vela rompió bajo el nivel
                 if float(candle["close"]) < level:
                     return i
             else:
-                # Ruptura BUY: close de la vela rompió sobre el nivel
                 if float(candle["close"]) > level:
                     return i
 
         return None
 
-    def _check_volume(
-        self,
-        df: pd.DataFrame,
-        breakout_candle_idx: int,
-    ) -> bool:
-        """
-        Verifica que la vela de ruptura tuvo volumen significativo.
+    def _check_volume(self, df: pd.DataFrame, breakout_candle_idx: int) -> bool:
+        """Verifica que la vela de ruptura tuvo volumen significativo."""
+        if len(df) < self.volume_period + 1:
+            return True  # Sin datos suficientes, no filtrar
 
-        Args:
-            breakout_candle_idx: Índice desde el final (0=actual, 1=anterior...)
+        idx = -(breakout_candle_idx + 1)
+        breakout_vol = float(df.iloc[idx]["tick_volume"])
 
-        Returns:
-            True si el volumen de la ruptura supera el factor mínimo
-        """
-        if "tick_volume" not in df.columns:
-            return True  # Si no hay volumen, no filtramos
+        avg_start = -(breakout_candle_idx + self.volume_period + 1)
+        avg_end = -(breakout_candle_idx + 1)
+        if avg_end == 0:
+            avg_end = None
+        avg_vol = float(df.iloc[avg_start:avg_end]["tick_volume"].mean())
 
-        # Volumen de la vela de ruptura
-        breakout_vol = float(df.iloc[-(breakout_candle_idx + 1)]["tick_volume"])
-
-        # Volumen promedio excluyendo las últimas fresh_candles velas
-        vol_data = df["tick_volume"].iloc[-(self.volume_period + self.fresh_candles):-self.fresh_candles]
-        if len(vol_data) == 0:
-            return True
-
-        avg_vol = float(vol_data.mean())
         if avg_vol <= 0:
             return True
 
-        return breakout_vol >= (self.volume_factor * avg_vol)
+        return breakout_vol >= (avg_vol * self.volume_factor)
 
     def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
-        min_candles = max(
-            self.lookback_candles + 1,
-            self.atr_period + 1,
-            self.volume_period + self.fresh_candles + 1,
-        )
+        min_candles = max(self.lookback_candles + 1, self.atr_period + 1)
         if len(df) < min_candles:
             return None
-
-        # Calcular high/low excluyendo la vela actual
-        high = recent_high(df.iloc[:-1], self.lookback_candles)
-        low = recent_low(df.iloc[:-1], self.lookback_candles)
 
         atr_series = atr(df, period=self.atr_period)
         atr_value = float(atr_series.iloc[-1])
         if pd.isna(atr_value) or atr_value <= 0:
             return None
 
-        msg_id = int(df.index[-1].timestamp())
-        sl_distance = self.sl_atr_multiple * atr_value
+        sl_distance = float(getattr(CFG, "SL_DISTANCE", 6.0))
         max_chase = self.max_chase_atr * atr_value
+        high = recent_high(df, self.lookback_candles)
+        low = recent_low(df, self.lookback_candles)
+        msg_id = int(df.index[-1].timestamp())
 
         # ==========================================
-        # SELL BREAKOUT
+        # SELL BREAKOUT → SELL LIMIT en nivel roto
         # ==========================================
         sell_level = low - self.breakout_buffer
         if current_price < sell_level:
 
-            # Filtro 3: No perseguir — precio no demasiado lejos del nivel
+            # Filtro 3: No perseguir
             if (sell_level - current_price) > max_chase:
                 return None
 
-            # Filtro 1: Frescura — ruptura reciente
+            # Filtro 1: Frescura
             breakout_idx = self._find_breakout_candle(df, low, "SELL")
             if breakout_idx is None or breakout_idx > self.fresh_candles:
                 return None
 
-            # Filtro 2: Volumen — ruptura con convicción
+            # Filtro 2: Volumen
             if not self._check_volume(df, breakout_idx):
                 return None
 
-            entry = current_price
+            # Entrada: LIMIT en el nivel roto (pullback al low)
+            entry = round(low, 2)
             sl = round(entry + sl_distance, 2)
-            tps = self._calculate_tps("SELL", round(entry, 2), sl, atr_value)
-            return self._make_signal("SELL", round(entry, 2), sl, tps, msg_id)
+            tps = self._calculate_tps("SELL", entry)
+            return self._make_signal("SELL", entry, sl, tps, msg_id)
 
         # ==========================================
-        # BUY BREAKOUT
+        # BUY BREAKOUT → BUY LIMIT en nivel roto
         # ==========================================
         buy_level = high + self.breakout_buffer
         if current_price > buy_level:
@@ -225,9 +173,10 @@ class BreakoutStrategy(BaseStrategy):
             if not self._check_volume(df, breakout_idx):
                 return None
 
-            entry = current_price
+            # Entrada: LIMIT en el nivel roto (pullback al high)
+            entry = round(high, 2)
             sl = round(entry - sl_distance, 2)
-            tps = self._calculate_tps("BUY", round(entry, 2), sl, atr_value)
-            return self._make_signal("BUY", round(entry, 2), sl, tps, msg_id)
+            tps = self._calculate_tps("BUY", entry)
+            return self._make_signal("BUY", entry, sl, tps, msg_id)
 
         return None

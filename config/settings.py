@@ -4,6 +4,7 @@ Configuración centralizada del bot con validación.
 
 FASE C: Agrega MAX_OPEN_POSITIONS
 FASE AUTONOMOUS: Agrega SCAN_INTERVAL
+FASE MOMENTUM: Agrega sl_distance, tp_distances para SL/TP fijos
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -44,8 +45,11 @@ class TradingConfig:
     be_buffer: float = 0.0
     close_at_buffer: float = 0.0
     stop_extra_buffer: float = 0.0
-    max_open_positions: int = 5       # 0 = sin límite
-    scan_interval: int = 300          # segundos entre cada scan autónomo
+    max_open_positions: int = 5
+    scan_interval: int = 300
+    # ── SL/TP fijos para estrategias autónomas ──
+    sl_distance: float = 6.0              # $6 desde entry
+    tp_distances: tuple = (5.0, 11.0, 16.0)  # TP1=$5, TP2=$11, TP3=$16
 
 
 @dataclass(frozen=True)
@@ -83,6 +87,8 @@ def _create_demo_trading_config() -> TradingConfig:
         be_buffer=0.0,
         max_open_positions=5,
         scan_interval=300,
+        sl_distance=6.0,
+        tp_distances=(5.0, 11.0, 16.0),
     )
 
 
@@ -103,6 +109,8 @@ def _create_real_trading_config() -> TradingConfig:
         be_buffer=0.0,
         max_open_positions=5,
         scan_interval=300,
+        sl_distance=6.0,
+        tp_distances=(5.0, 11.0, 16.0),
     )
 
 
@@ -176,3 +184,5 @@ EXTRA_SLIPPAGE = CONFIG.trading.extra_slippage
 BE_BUFFER = CONFIG.trading.be_buffer
 MAX_OPEN_POSITIONS = CONFIG.trading.max_open_positions
 SCAN_INTERVAL = CONFIG.trading.scan_interval
+SL_DISTANCE = CONFIG.trading.sl_distance
+TP_DISTANCES = CONFIG.trading.tp_distances
