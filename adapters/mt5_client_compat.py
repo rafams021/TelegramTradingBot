@@ -8,11 +8,14 @@ sin cambios mientras internamente usa el nuevo MT5Client refactorizado.
 FASE A - LIMPIEZA: Se agrega set_client() para que main.py registre
 la instancia única de MT5Client, evitando dos conexiones paralelas.
 
+FASE B - LIMPIEZA: Se agrega positions_get_all() para que PositionWatcher
+pueda consultar todas las posiciones abiertas del bot por MAGIC number.
+
 BACKWARD COMPATIBILITY: 100%
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import config as CFG
 from .mt5 import MT5Client, Tick
@@ -107,7 +110,16 @@ def position_get(ticket: int) -> Any:
     return _get_client().get_position(ticket)
 
 
-def orders_get():
+def positions_get_all() -> List[Any]:
+    """
+    Obtiene todas las posiciones abiertas del símbolo.
+    Usado por PositionWatcher para detectar cierres externos.
+    Retorna lista vacía si falla, nunca None.
+    """
+    return _get_client().get_all_positions()
+
+
+def orders_get() -> List[Any]:
     """Obtiene órdenes pendientes."""
     return _get_client().get_orders()
 
