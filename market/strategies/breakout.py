@@ -51,7 +51,7 @@ class BreakoutStrategy(BaseStrategy):
         self.breakout_buffer = breakout_buffer
         self.sl_buffer = sl_buffer
         self.atr_period = atr_period
-        self.atr_multiples = atr_multiples or [1.0, 2.0, 3.0]
+        self.atr_multiples = atr_multiples or [0.5, 1.0, 2.0]
         self.min_rr_multiples = min_rr_multiples or [1.5, 2.0, 3.0]
 
     @property
