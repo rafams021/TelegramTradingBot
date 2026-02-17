@@ -2,7 +2,8 @@
 """
 Estrategia de Reversión en Soporte/Resistencia.
 
-TPs calculados con ATR + R:R mínimo garantizado.
+SL: entry ± (sl_atr_multiple × ATR)
+TPs: ATR escalonado [0.5, 1.0, 2.0] con R:R mínimo [1.0, 1.5, 2.0].
 """
 from __future__ import annotations
 
@@ -16,12 +17,6 @@ from .base import BaseStrategy
 
 
 class ReversalStrategy(BaseStrategy):
-    """
-    Setup BUY:  precio cerca de soporte + RSI < rsi_oversold
-    Setup SELL: precio cerca de resistencia + RSI > rsi_overbought
-
-    TPs: max(ATR_multiple × ATR, min_rr × SL_distance)
-    """
 
     def __init__(
         self,
@@ -30,7 +25,7 @@ class ReversalStrategy(BaseStrategy):
         lookback_candles: int = 20,
         proximity_pips: float = 3.0,
         entry_buffer: float = 1.0,
-        sl_buffer: float = 10.0,
+        sl_atr_multiple: float = 1.5,
         atr_period: int = 14,
         atr_multiples: list = None,
         min_rr_multiples: list = None,
@@ -42,10 +37,10 @@ class ReversalStrategy(BaseStrategy):
         self.lookback_candles = lookback_candles
         self.proximity_pips = proximity_pips
         self.entry_buffer = entry_buffer
-        self.sl_buffer = sl_buffer
+        self.sl_atr_multiple = sl_atr_multiple
         self.atr_period = atr_period
         self.atr_multiples = atr_multiples or [0.5, 1.0, 2.0]
-        self.min_rr_multiples = min_rr_multiples or [1.5, 2.0, 3.0]
+        self.min_rr_multiples = min_rr_multiples or [1.0, 1.5, 2.0]
         self.rsi_period = rsi_period
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
@@ -88,6 +83,7 @@ class ReversalStrategy(BaseStrategy):
             return None
 
         msg_id = int(df.index[-1].timestamp())
+        sl_distance = self.sl_atr_multiple * atr_value
 
         closest_level = min(levels, key=lambda l: abs(l - current_price))
         if abs(current_price - closest_level) > self.proximity_pips:
@@ -96,14 +92,14 @@ class ReversalStrategy(BaseStrategy):
         # BUY: en soporte + sobreventa
         if current_price <= closest_level and current_rsi < self.rsi_oversold:
             entry = round(closest_level + self.entry_buffer, 2)
-            sl = round(closest_level - self.sl_buffer, 2)
+            sl = round(entry - sl_distance, 2)
             tps = self._calculate_tps("BUY", entry, sl, atr_value)
             return self._make_signal("BUY", entry, sl, tps, msg_id)
 
         # SELL: en resistencia + sobrecompra
         if current_price >= closest_level and current_rsi > self.rsi_overbought:
             entry = round(closest_level - self.entry_buffer, 2)
-            sl = round(closest_level + self.sl_buffer, 2)
+            sl = round(entry + sl_distance, 2)
             tps = self._calculate_tps("SELL", entry, sl, atr_value)
             return self._make_signal("SELL", entry, sl, tps, msg_id)
 

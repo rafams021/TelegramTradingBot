@@ -4,7 +4,9 @@ Punto de entrada principal del TelegramTradingBot.
 
 FASE A: Instancia MT5 única + modo degradado
 FIX: Verifica sesión Telegram antes de conectar
-FASE AUTONOMOUS: _run_degraded() reemplazado por AutonomousTrader
+FASE AUTONOMOUS: AutonomousTrader reemplaza _run_degraded()
+FIX SYNC: Sincroniza posiciones existentes al arrancar para evitar
+          re-entrada en breakouts activos tras reinicio.
 """
 import asyncio
 import os
@@ -18,15 +20,12 @@ from adapters.mt5_client_compat import set_client as set_compat_client
 from adapters.telegram import TelegramBotClient
 from autonomous import AutonomousTrader
 from core.executor import execute_signal, set_mt5_client
+from core.models import Signal
 from core.watcher import run_watcher
 from core.state import BOT_STATE
 
 
 def _telegram_session_exists() -> bool:
-    """
-    Verifica si existe el archivo de sesión de Telegram.
-    Si no existe, conectar causaría un prompt interactivo.
-    """
     session_file = f"{CFG.SESSION_NAME}.session"
     exists = os.path.isfile(session_file)
     if not exists:
@@ -38,11 +37,79 @@ def _telegram_session_exists() -> bool:
     return exists
 
 
+def _sync_existing_positions(mt5_client: MT5Client) -> None:
+    """
+    Sincroniza posiciones abiertas en MT5 con el BotState.
+
+    Al arrancar, el BotState está vacío. Si hay posiciones abiertas
+    con nuestro MAGIC, las registramos como señales ya ejecutadas
+    para que el guard de duplicados bloquee re-entradas.
+
+    Esto evita que el bot abra nuevas posiciones al reiniciar
+    durante un breakout activo que ya tiene posiciones abiertas.
+    """
+    logger = get_logger()
+
+    try:
+        existing = mt5_client.get_all_positions()
+    except Exception as ex:
+        logger.error("SYNC_POSITIONS_ERROR", error=str(ex))
+        return
+
+    if not existing:
+        logger.event("SYNC_POSITIONS_NONE")
+        return
+
+    # Agrupar por magic_comment o usar ticket como msg_id único
+    # Registramos una señal sintética por cada posición para
+    # que has_signal() devuelva True y bloquee duplicados
+    registered = set()
+    for pos in existing:
+        # Usar el ticket como identificador único de la señal
+        # Esto es suficiente para bloquear re-entradas
+        ticket = int(getattr(pos, "ticket", 0) or 0)
+        if ticket <= 0 or ticket in registered:
+            continue
+
+        # Crear señal sintética mínima para registrar en BotState
+        try:
+            side = "BUY" if int(getattr(pos, "type", 1)) == 0 else "SELL"
+            entry = float(getattr(pos, "price_open", 0) or 0)
+            sl = float(getattr(pos, "sl", 0) or 0)
+            tp = float(getattr(pos, "tp", 0) or 0)
+
+            # Si no hay SL/TP válidos, usar valores sintéticos
+            if sl <= 0:
+                sl = entry * 0.99 if side == "BUY" else entry * 1.01
+            if tp <= 0:
+                tp = entry * 1.01 if side == "BUY" else entry * 0.99
+
+            synthetic_signal = Signal(
+                message_id=ticket,
+                symbol=str(getattr(pos, "symbol", CFG.SYMBOL)),
+                side=side,
+                entry=entry,
+                tps=[tp],
+                sl=sl,
+            )
+            BOT_STATE.add_signal(synthetic_signal)
+            registered.add(ticket)
+
+        except Exception as ex:
+            logger.error(
+                "SYNC_POSITION_REGISTER_ERROR",
+                ticket=ticket,
+                error=str(ex),
+            )
+
+    logger.event(
+        "SYNC_POSITIONS_DONE",
+        positions_found=len(existing),
+        registered=len(registered),
+    )
+
+
 async def _run_telegram(tg_client: TelegramBotClient, logger) -> None:
-    """
-    Intenta conectar y correr Telegram.
-    Si falla, loggea y retorna silenciosamente.
-    """
     try:
         if not await tg_client.start():
             logger.event(
@@ -74,7 +141,6 @@ async def _run_telegram(tg_client: TelegramBotClient, logger) -> None:
             "TG_RUNTIME_ERROR",
             error=str(ex),
             traceback=traceback.format_exc(),
-            detail="Bot continuando en modo autónomo sin Telegram",
         )
     finally:
         try:
@@ -84,17 +150,6 @@ async def _run_telegram(tg_client: TelegramBotClient, logger) -> None:
 
 
 async def main():
-    """
-    Función principal del bot.
-
-    Flujo:
-    1. Boot
-    2. Conectar MT5
-    3. Registrar instancia MT5 única
-    4. Iniciar watchers
-    5. Iniciar trader autónomo
-    6. Intentar Telegram si hay sesión (opcional)
-    """
     logger = get_logger()
     logger.event("BOOT")
 
@@ -125,13 +180,21 @@ async def main():
     logger.event("MT5_CLIENT_REGISTERED")
 
     # ==========================================
-    # 4. INICIAR WATCHERS
+    # 4. SINCRONIZAR POSICIONES EXISTENTES
+    # Debe correr ANTES de iniciar el trader
+    # autónomo para que el guard de duplicados
+    # funcione desde el primer scan.
+    # ==========================================
+    _sync_existing_positions(mt5_client)
+
+    # ==========================================
+    # 5. INICIAR WATCHERS
     # ==========================================
     asyncio.create_task(run_watcher(BOT_STATE))
     logger.event("WATCHERS_STARTED")
 
     # ==========================================
-    # 5. INICIAR TRADER AUTÓNOMO
+    # 6. INICIAR TRADER AUTÓNOMO
     # ==========================================
     scan_interval = int(getattr(CFG, "SCAN_INTERVAL", 300))
     trader = AutonomousTrader(
@@ -144,7 +207,7 @@ async def main():
     logger.event("AUTONOMOUS_TRADER_TASK_STARTED", scan_interval=scan_interval)
 
     # ==========================================
-    # 6. TELEGRAM (opcional)
+    # 7. TELEGRAM (opcional)
     # ==========================================
     try:
         if _telegram_session_exists():
@@ -164,7 +227,6 @@ async def main():
                 detail="Telegram terminó. Bot continúa autónomo.",
             )
 
-        # Mantener bot vivo por el trader autónomo
         await autonomous_task
 
     except KeyboardInterrupt:
