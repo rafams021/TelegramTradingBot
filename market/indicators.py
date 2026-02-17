@@ -31,6 +31,24 @@ def sma(df: pd.DataFrame, period: int, column: str = "close") -> pd.Series:
     return df[column].rolling(window=period).mean()
 
 
+def ema(df: pd.DataFrame, period: int, column: str = "close") -> pd.Series:
+    """
+    Exponential Moving Average.
+
+    Usa ewm con adjust=False para replicar el comportamiento estándar
+    de EMA en plataformas de trading (MT5, TradingView, etc.).
+
+    Args:
+        df: DataFrame con datos OHLCV
+        period: Período de la EMA
+        column: Columna a usar (default: "close")
+
+    Returns:
+        Serie con los valores de la EMA
+    """
+    return df[column].ewm(span=period, adjust=False).mean()
+
+
 def rsi(df: pd.DataFrame, period: int = 14, column: str = "close") -> pd.Series:
     """
     Relative Strength Index.

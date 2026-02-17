@@ -10,10 +10,12 @@ _tick_loop(): cada 100ms
     → Corre M1: MomentumStrategy
     → Detecta movimientos explosivos inmediatos
     → Entra a mercado sin esperar siguiente candle loop
+    → Heartbeat cada 5 min para confirmar que el loop está vivo
 """
 from __future__ import annotations
 
 import asyncio
+import time
 
 import config as CFG
 from core.executor import execute_signal_direct
@@ -77,6 +79,12 @@ class AutonomousTrader:
         self._momentum_cooldown_s: float = 60.0   # 1 min entre señales momentum
         self._last_momentum_time: float = 0.0
 
+        # Heartbeat del tick loop
+        self._tick_count: int = 0
+        self._tick_errors: int = 0
+        self._tick_last_heartbeat: float = 0.0
+        self._tick_heartbeat_interval: float = 300.0  # heartbeat cada 5 min
+
     async def run(self) -> None:
         """
         Arranca ambos loops de forma concurrente.
@@ -133,20 +141,40 @@ class AutonomousTrader:
         evalúa si hay momentum explosivo para entrar a mercado.
 
         Cooldown de 60s entre señales para evitar sobretrading.
+        Heartbeat cada 5 min para confirmar que el loop está vivo.
         """
         self.logger.event(
             "TICK_LOOP_STARTED",
             tick_interval_ms=int(self.tick_interval_s * 1000),
         )
+        self._tick_last_heartbeat = time.monotonic()
 
         while self.running:
             try:
                 await self._tick_scan()
+                self._tick_count += 1
             except Exception as ex:
+                self._tick_errors += 1
                 self.logger.error(
                     "TICK_LOOP_ERROR",
                     error=str(ex),
                 )
+
+            # Heartbeat cada 5 minutos
+            now = time.monotonic()
+            if (now - self._tick_last_heartbeat) >= self._tick_heartbeat_interval:
+                self.logger.event(
+                    "TICK_LOOP_HEARTBEAT",
+                    ticks_processed=self._tick_count,
+                    errors=self._tick_errors,
+                    cooldown_active=(
+                        (now - self._last_momentum_time) < self._momentum_cooldown_s
+                    ),
+                    last_momentum_side=self._last_momentum_side,
+                )
+                self._tick_last_heartbeat = now
+                self._tick_count = 0
+                self._tick_errors = 0
 
             await asyncio.sleep(self.tick_interval_s)
 
@@ -195,8 +223,6 @@ class AutonomousTrader:
 
     async def _tick_scan(self) -> None:
         """Un ciclo del tick loop: obtiene M1 y evalúa momentum."""
-        import time
-
         now = time.monotonic()
 
         # Cooldown activo → saltar

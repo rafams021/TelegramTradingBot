@@ -4,6 +4,11 @@ Estrategia de Reversión en Soporte/Resistencia.
 
 Entrada: MARKET en soporte/resistencia con RSI extremo.
 SL/TP: Fijos desde config (sl_distance, tp_distances).
+
+Cambios v2:
+  - proximity_pips: 3.0 → 8.0 (más margen para XAUUSD)
+  - rsi_oversold:   40.0 → 45.0 (umbral más realista)
+  - rsi_overbought: 60.0 → 55.0 (umbral más realista)
 """
 from __future__ import annotations
 
@@ -24,11 +29,11 @@ class ReversalStrategy(BaseStrategy):
         symbol: str,
         magic: int,
         lookback_candles: int = 20,
-        proximity_pips: float = 3.0,
+        proximity_pips: float = 8.0,
         atr_period: int = 14,
         rsi_period: int = 14,
-        rsi_oversold: float = 40.0,
-        rsi_overbought: float = 60.0,
+        rsi_oversold: float = 45.0,
+        rsi_overbought: float = 55.0,
     ):
         super().__init__(symbol, magic)
         self.lookback_candles = lookback_candles
