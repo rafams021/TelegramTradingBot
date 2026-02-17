@@ -29,9 +29,11 @@ import pandas as pd
 # ── Config básica (sin importar todo el proyecto) ──
 SYMBOL       = "XAUUSD-ECN"
 MAGIC        = 6069104329
-SL_DISTANCE  = 6.0
-TP_DISTANCES = (5.0, 11.0, 16.0)
 VOLUME       = 0.05
+
+# Defaults — sobreescritos por --sl-distance y --tp1-distance
+_SL_DISTANCE  = 6.0
+_TP_DISTANCES = (5.0, 11.0, 16.0)
 
 
 # ══════════════════════════════════════════════════
@@ -158,14 +160,14 @@ def get_d1_data() -> pd.DataFrame:
 
 def calc_tps(side: str, entry: float) -> tuple:
     if side == "BUY":
-        return tuple(round(entry + d, 2) for d in TP_DISTANCES)
-    return tuple(round(entry - d, 2) for d in TP_DISTANCES)
+        return tuple(round(entry + d, 2) for d in _TP_DISTANCES)
+    return tuple(round(entry - d, 2) for d in _TP_DISTANCES)
 
 
 def calc_sl(side: str, entry: float) -> float:
     if side == "BUY":
-        return round(entry - SL_DISTANCE, 2)
-    return round(entry + SL_DISTANCE, 2)
+        return round(entry - _SL_DISTANCE, 2)
+    return round(entry + _SL_DISTANCE, 2)
 
 
 def sma(series: pd.Series, period: int) -> pd.Series:
@@ -398,9 +400,12 @@ def simulate_exit(
     Máximo 200 velas hacia adelante (~200 horas en H1).
 
     tp1_only=True: ignora TP2/TP3, cierra todo en TP1.
-                   Simula tener MAX_SPLITS=1 o cerrar en primera toma.
     """
     max_bars = min(entry_i + 201, len(df))
+    sl_pnl  = round(-(_SL_DISTANCE * 10 * PNL_PER_DOLLAR), 2)
+    tp1_pnl = round(_TP_DISTANCES[0] * 10 * PNL_PER_DOLLAR, 2)
+    tp2_pnl = round(_TP_DISTANCES[1] * 10 * PNL_PER_DOLLAR, 2)
+    tp3_pnl = round(_TP_DISTANCES[2] * 10 * PNL_PER_DOLLAR, 2)
 
     for j in range(entry_i + 1, max_bars):
         candle = df.iloc[j]
@@ -408,61 +413,56 @@ def simulate_exit(
         low  = float(candle["low"])
 
         if trade.side == "BUY":
-            # SL hit
             if low <= trade.sl:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.sl
                 trade.result     = "SL"
-                trade.pnl        = round(-(SL_DISTANCE * 10 * PNL_PER_DOLLAR), 2)
+                trade.pnl        = sl_pnl
                 return trade
-            # TP3 hit (solo si no es tp1_only)
             if not tp1_only and high >= trade.tp3:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp3
                 trade.result     = "TP3"
-                trade.pnl        = round(TP_DISTANCES[2] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp3_pnl
                 return trade
-            # TP2 hit (solo si no es tp1_only)
             if not tp1_only and high >= trade.tp2:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp2
                 trade.result     = "TP2"
-                trade.pnl        = round(TP_DISTANCES[1] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp2_pnl
                 return trade
-            # TP1 hit
             if high >= trade.tp1:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp1
                 trade.result     = "TP1"
-                trade.pnl        = round(TP_DISTANCES[0] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp1_pnl
                 return trade
         else:  # SELL
             if high >= trade.sl:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.sl
                 trade.result     = "SL"
-                trade.pnl        = round(-(SL_DISTANCE * 10 * PNL_PER_DOLLAR), 2)
+                trade.pnl        = sl_pnl
                 return trade
             if not tp1_only and low <= trade.tp3:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp3
                 trade.result     = "TP3"
-                trade.pnl        = round(TP_DISTANCES[2] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp3_pnl
                 return trade
             if not tp1_only and low <= trade.tp2:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp2
                 trade.result     = "TP2"
-                trade.pnl        = round(TP_DISTANCES[1] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp2_pnl
                 return trade
             if low <= trade.tp1:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp1
                 trade.result     = "TP1"
-                trade.pnl        = round(TP_DISTANCES[0] * 10 * PNL_PER_DOLLAR, 2)
+                trade.pnl        = tp1_pnl
                 return trade
 
-    # Sin salida en 200 velas → OPEN
     return trade
 
 
@@ -525,6 +525,7 @@ def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1
     mode = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
     print("\n" + "═" * 60)
     print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}]")
+    print(f"  SL=${_SL_DISTANCE} | TP={_TP_DISTANCES} | RR={_TP_DISTANCES[0]/_SL_DISTANCE:.2f}:1")
     print("═" * 60)
 
     grand_trades = 0
@@ -605,19 +606,37 @@ def save_csv(results: List[BacktestResult], filename: str = "backtest_trades.csv
 
 def main():
     parser = argparse.ArgumentParser(description="Backtester del bot autónomo")
-    parser.add_argument("--months",     type=int,   default=3,
+    parser.add_argument("--months",       type=int,   default=3,
                         help="Meses de historia (default: 3)")
-    parser.add_argument("--timeframe",  type=str,   default="H1",
+    parser.add_argument("--timeframe",    type=str,   default="H1",
                         help="Timeframe H1/H4/M15 (default: H1)")
-    parser.add_argument("--strategy",   type=str,   default="ALL",
+    parser.add_argument("--strategy",     type=str,   default="ALL",
                         help="BREAKOUT/REVERSAL/TREND/ALL (default: ALL)")
-    parser.add_argument("--cooldown",   type=int,   default=3,
+    parser.add_argument("--cooldown",     type=int,   default=3,
                         help="Velas de cooldown entre señales (default: 3)")
-    parser.add_argument("--tp1-only",   action="store_true",
+    parser.add_argument("--tp1-only",     action="store_true",
                         help="Cerrar todo en TP1, ignorar TP2/TP3")
-    parser.add_argument("--csv",        action="store_true",
+    parser.add_argument("--sl-distance",  type=float, default=6.0,
+                        help="Distancia del SL en dólares (default: 6.0)")
+    parser.add_argument("--tp1-distance", type=float, default=5.0,
+                        help="Distancia del TP1 en dólares (default: 5.0)")
+    parser.add_argument("--csv",          action="store_true",
                         help="Guardar trades en CSV")
     args = parser.parse_args()
+
+    # Aplicar SL/TP a las variables globales
+    global _SL_DISTANCE, _TP_DISTANCES
+    _SL_DISTANCE  = args.sl_distance
+    tp1 = args.tp1_distance
+    # TP2 y TP3 escalan proporcionalmente al cambio de TP1
+    # Base original: TP1=5, TP2=11, TP3=16
+    # Ratio: TP2 = TP1×2.2, TP3 = TP1×3.2
+    tp2 = round(tp1 * 2.2, 1)
+    tp3 = round(tp1 * 3.2, 1)
+    _TP_DISTANCES = (tp1, tp2, tp3)
+
+    print(f"⚙️  Config: SL=${_SL_DISTANCE} | TP1=${tp1} TP2=${tp2} TP3=${tp3} "
+          f"| RR={tp1/_SL_DISTANCE:.2f}:1")
 
     # Conectar MT5
     if not connect_mt5():
@@ -647,7 +666,9 @@ def main():
 
     # Guardar CSV si se pidió
     if args.csv:
-        suffix = "_tp1only" if tp1_only else ""
+        suffix = f"_sl{int(_SL_DISTANCE)}_tp{int(args.tp1_distance)}"
+        if tp1_only:
+            suffix += "_tp1only"
         save_csv(results, filename=f"backtest_trades{suffix}.csv")
 
     mt5.shutdown()
