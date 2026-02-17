@@ -231,7 +231,17 @@ def scan_breakout(
     i: int,
     ema_filter: bool = False,
 ) -> Optional[BacktestTrade]:
-    """Simula BreakoutStrategy en la vela i."""
+    """
+    Breakout de zona D1 simplificado.
+    
+    Setup SELL: precio actual < daily_low - buffer
+                → entrada LIMIT en daily_low (pullback)
+    Setup BUY:  precio actual > daily_high + buffer
+                → entrada LIMIT en daily_high (pullback)
+    
+    Sin filtro de frescura ni max_chase — si el precio está en zona
+    de breakout, asume que el movimiento es válido.
+    """
     if i < 30:
         return None
 
@@ -251,64 +261,36 @@ def scan_breakout(
     daily_high = float(prev_day["high"])
     daily_low  = float(prev_day["low"])
 
-    # EMA 50/200
-    if len(window) >= 201:
-        ema50  = float(ema_fn(window["close"], 50).iloc[-1])
-        ema200 = float(ema_fn(window["close"], 200).iloc[-1])
-        ema_bull = ema50 > ema200
-    else:
-        ema_bull = None  # sin datos, no filtrar
-
     breakout_buffer = 2.0
-    max_chase = 1.0 * atr_val
-    fresh_candles = 4
 
     # SELL BREAKOUT
     sell_level = daily_low - breakout_buffer
     if current_price < sell_level:
-        if (sell_level - current_price) <= max_chase:
-            # Frescura: buscar vela de ruptura en las últimas fresh_candles
-            broke = False
-            for k in range(1, fresh_candles + 2):
-                if i - k < 0:
-                    break
-                if float(df_h1["close"].iloc[i - k]) < daily_low:
-                    broke = True
-                    break
-            if broke:
-                entry = round(daily_low, 2)
-                sl = calc_sl("SELL", entry)
-                tp1, tp2, tp3 = calc_tps("SELL", entry)
-                if ema_filter and not check_ema_hard(window, "SELL"):
-                    return None
-                return BacktestTrade(
-                    strategy="BREAKOUT", side="SELL",
-                    entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    entry_time=ts,
-                )
+        entry = round(daily_low, 2)
+        sl = calc_sl("SELL", entry)
+        tp1, tp2, tp3 = calc_tps("SELL", entry)
+        if ema_filter and not check_ema_hard(window, "SELL"):
+            return None
+        return BacktestTrade(
+            strategy="BREAKOUT", side="SELL",
+            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+            entry_time=ts,
+        )
 
     # BUY BREAKOUT
     buy_level = daily_high + breakout_buffer
     if current_price > buy_level:
-        if (current_price - buy_level) <= max_chase:
-            broke = False
-            for k in range(1, fresh_candles + 2):
-                if i - k < 0:
-                    break
-                if float(df_h1["close"].iloc[i - k]) > daily_high:
-                    broke = True
-                    break
-            if broke:
-                entry = round(daily_high, 2)
-                sl = calc_sl("BUY", entry)
-                tp1, tp2, tp3 = calc_tps("BUY", entry)
-                if ema_filter and not check_ema_hard(window, "BUY"):
-                    return None
-                return BacktestTrade(
-                    strategy="BREAKOUT", side="BUY",
-                    entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                    entry_time=ts,
-                )
+        entry = round(daily_high, 2)
+        sl = calc_sl("BUY", entry)
+        tp1, tp2, tp3 = calc_tps("BUY", entry)
+        if ema_filter and not check_ema_hard(window, "BUY"):
+            return None
+        return BacktestTrade(
+            strategy="BREAKOUT", side="BUY",
+            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+            entry_time=ts,
+        )
+    
     return None
 
 
