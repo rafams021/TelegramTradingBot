@@ -386,11 +386,19 @@ def scan_trend(df_h1: pd.DataFrame, i: int) -> Optional[BacktestTrade]:
 
 PNL_PER_DOLLAR = 0.05  # 0.05 lot × $1 = $0.05 por pip en XAUUSD mini
 
-def simulate_exit(trade: BacktestTrade, df: pd.DataFrame, entry_i: int) -> BacktestTrade:
+def simulate_exit(
+    trade: BacktestTrade,
+    df: pd.DataFrame,
+    entry_i: int,
+    tp1_only: bool = False,
+) -> BacktestTrade:
     """
     Recorre las velas siguientes buscando cuál se toca primero: SL o TP.
     Usa el high/low de cada vela para detectar el toque.
     Máximo 200 velas hacia adelante (~200 horas en H1).
+
+    tp1_only=True: ignora TP2/TP3, cierra todo en TP1.
+                   Simula tener MAX_SPLITS=1 o cerrar en primera toma.
     """
     max_bars = min(entry_i + 201, len(df))
 
@@ -407,15 +415,15 @@ def simulate_exit(trade: BacktestTrade, df: pd.DataFrame, entry_i: int) -> Backt
                 trade.result     = "SL"
                 trade.pnl        = round(-(SL_DISTANCE * 10 * PNL_PER_DOLLAR), 2)
                 return trade
-            # TP3 hit (mejor)
-            if high >= trade.tp3:
+            # TP3 hit (solo si no es tp1_only)
+            if not tp1_only and high >= trade.tp3:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp3
                 trade.result     = "TP3"
                 trade.pnl        = round(TP_DISTANCES[2] * 10 * PNL_PER_DOLLAR, 2)
                 return trade
-            # TP2 hit
-            if high >= trade.tp2:
+            # TP2 hit (solo si no es tp1_only)
+            if not tp1_only and high >= trade.tp2:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp2
                 trade.result     = "TP2"
@@ -435,13 +443,13 @@ def simulate_exit(trade: BacktestTrade, df: pd.DataFrame, entry_i: int) -> Backt
                 trade.result     = "SL"
                 trade.pnl        = round(-(SL_DISTANCE * 10 * PNL_PER_DOLLAR), 2)
                 return trade
-            if low <= trade.tp3:
+            if not tp1_only and low <= trade.tp3:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp3
                 trade.result     = "TP3"
                 trade.pnl        = round(TP_DISTANCES[2] * 10 * PNL_PER_DOLLAR, 2)
                 return trade
-            if low <= trade.tp2:
+            if not tp1_only and low <= trade.tp2:
                 trade.exit_time  = df.index[j]
                 trade.exit_price = trade.tp2
                 trade.result     = "TP2"
@@ -467,18 +475,20 @@ def run_backtest(
     df_d1: pd.DataFrame,
     strategies: List[str],
     cooldown_bars: int = 3,
+    tp1_only: bool = False,
 ) -> List[BacktestResult]:
     """
     Recorre las velas una por una simulando el bot.
 
     cooldown_bars: velas de cooldown entre señales de la misma estrategia
-                   (evita señales duplicadas consecutivas)
+    tp1_only: si True, cierra todo en TP1 (ignora TP2/TP3)
     """
     results = {s: BacktestResult(strategy=s) for s in strategies}
     last_signal_bar = {s: -cooldown_bars for s in strategies}
 
+    mode_label = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
     total = len(df_h1)
-    print(f"\n⏳ Procesando {total} velas...")
+    print(f"\n⏳ Procesando {total} velas... [{mode_label}]")
 
     for i in range(200, total - 1):
         if i % 500 == 0:
@@ -486,7 +496,6 @@ def run_backtest(
             print(f"   {pct:.0f}% — vela {i}/{total}", end="\r")
 
         for strategy in strategies:
-            # Cooldown: saltar si ya hubo señal reciente
             if i - last_signal_bar[strategy] < cooldown_bars:
                 continue
 
@@ -500,7 +509,7 @@ def run_backtest(
                 trade = scan_trend(df_h1, i)
 
             if trade is not None:
-                trade = simulate_exit(trade, df_h1, i)
+                trade = simulate_exit(trade, df_h1, i, tp1_only=tp1_only)
                 results[strategy].trades.append(trade)
                 last_signal_bar[strategy] = i
 
@@ -512,9 +521,10 @@ def run_backtest(
 # REPORTE
 # ══════════════════════════════════════════════════
 
-def print_report(results: List[BacktestResult], timeframe: str, months: int) -> None:
+def print_report(results: List[BacktestResult], timeframe: str, months: int, tp1_only: bool = False) -> None:
+    mode = "TP1 ONLY" if tp1_only else "TP1/TP2/TP3"
     print("\n" + "═" * 60)
-    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses)")
+    print(f"  BACKTEST REPORT — {SYMBOL} {timeframe} ({months} meses) [{mode}]")
     print("═" * 60)
 
     grand_trades = 0
@@ -603,6 +613,8 @@ def main():
                         help="BREAKOUT/REVERSAL/TREND/ALL (default: ALL)")
     parser.add_argument("--cooldown",   type=int,   default=3,
                         help="Velas de cooldown entre señales (default: 3)")
+    parser.add_argument("--tp1-only",   action="store_true",
+                        help="Cerrar todo en TP1, ignorar TP2/TP3")
     parser.add_argument("--csv",        action="store_true",
                         help="Guardar trades en CSV")
     args = parser.parse_args()
@@ -621,19 +633,22 @@ def main():
         print(f"❌ Estrategia inválida: {args.strategy}")
         sys.exit(1)
 
+    tp1_only = args.tp1_only
+
     # Descargar datos
     df_h1 = get_historical_data(args.timeframe, args.months)
     df_d1 = get_d1_data()
 
     # Correr backtest
-    results = run_backtest(df_h1, df_d1, strategies, cooldown_bars=args.cooldown)
+    results = run_backtest(df_h1, df_d1, strategies, cooldown_bars=args.cooldown, tp1_only=tp1_only)
 
     # Mostrar reporte
-    print_report(results, args.timeframe, args.months)
+    print_report(results, args.timeframe, args.months, tp1_only=tp1_only)
 
     # Guardar CSV si se pidió
     if args.csv:
-        save_csv(results)
+        suffix = "_tp1only" if tp1_only else ""
+        save_csv(results, filename=f"backtest_trades{suffix}.csv")
 
     mt5.shutdown()
 
