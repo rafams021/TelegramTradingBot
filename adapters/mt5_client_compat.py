@@ -2,8 +2,11 @@
 """
 Wrapper de compatibilidad para mantener la API antigua de mt5_client.py funcionando.
 
-Este archivo permite que el código existente (executor.py, watcher.py) siga funcionando
+Este archivo permite que el código existente (monitoring, executor) siga funcionando
 sin cambios mientras internamente usa el nuevo MT5Client refactorizado.
+
+FASE A - LIMPIEZA: Se agrega set_client() para que main.py registre
+la instancia única de MT5Client, evitando dos conexiones paralelas.
 
 BACKWARD COMPATIBILITY: 100%
 """
@@ -14,14 +17,33 @@ from typing import Any, Optional, Tuple
 import config as CFG
 from .mt5 import MT5Client, Tick
 
-# Cliente global (lazy init)
+# Cliente global (se puede setear desde main.py o crear lazy)
 _client: Optional[MT5Client] = None
 
 
+def set_client(client: MT5Client) -> None:
+    """
+    Registra la instancia de MT5Client creada en main.py.
+
+    Debe llamarse en main.py justo después de crear MT5Client
+    y antes de iniciar los watchers. Esto garantiza que toda
+    la app use una única conexión MT5.
+
+    Args:
+        client: Instancia ya conectada de MT5Client
+    """
+    global _client
+    _client = client
+
+
 def _get_client() -> MT5Client:
-    """Obtiene o crea el cliente global."""
+    """
+    Obtiene el cliente registrado.
+    Si no fue registrado via set_client(), crea uno lazy como fallback.
+    """
     global _client
     if _client is None:
+        # Fallback: crear instancia propia (compatibilidad con tests/scripts)
         _client = MT5Client(
             login=CFG.MT5_LOGIN,
             password=CFG.MT5_PASSWORD,
@@ -40,8 +62,7 @@ def _get_client() -> MT5Client:
 
 def init() -> bool:
     """Inicializa MT5 (wrapper de compatibilidad)."""
-    client = _get_client()
-    return client.connect()
+    return _get_client().connect()
 
 
 def shutdown() -> None:
@@ -123,7 +144,8 @@ def modify_sltp(ticket: int, new_sl: float, new_tp: float) -> Tuple[Optional[dic
 
 def time_now() -> float:
     """Timestamp actual."""
-    return MT5Client.time_now()
+    import time
+    return time.time()
 
 
 def account_login():
