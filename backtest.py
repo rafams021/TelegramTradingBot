@@ -2,14 +2,22 @@
 """
 Backtester para las estrategias del bot autónomo.
 
-MODIFICADO PARA FASE 2 ML:
+MODIFICADO PARA FASE 2 ML + FILTROS AVANZADOS:
 - Extrae features de cada señal usando ml.feature_extractor
 - Guarda features en CSV para entrenar modelo
-- Compatible con train_model_from_backtest.py
+- NUEVOS filtros avanzados para Reversal:
+  --advanced: Activa TODOS los filtros (sesión+OB+impulse+volume+quality)
+  --strict-session: Solo London/NY open
+  --order-blocks: Detecta Order Blocks
+  --impulse-filter: Requiere vela de impulso
+  --min-touches N: Mínimo toques para S/R válido
 
-Uso:
+Uso básico:
     python backtest.py --months 6 --strategy REVERSAL --csv
-    # Genera CSV con features para ML
+    
+Uso con filtros avanzados:
+    python backtest.py --months 12 --strategy REVERSAL --advanced --csv
+    python backtest.py --months 12 --strategy REVERSAL --strict-session --order-blocks --csv
 """
 from __future__ import annotations
 
@@ -24,7 +32,7 @@ import numpy as np
 import pandas as pd
 
 # ============================================================================
-# IMPORT ML FEATURE EXTRACTOR (NUEVO - FASE 2)
+# IMPORT ML FEATURE EXTRACTOR (FASE 2)
 # ============================================================================
 try:
     from ml.feature_extractor import extract_features
@@ -164,7 +172,6 @@ def get_d1_data() -> pd.DataFrame:
 
 # ==================================================
 # SIMULACIÓN DE ESTRATEGIAS
-# (réplica directa sin importar el proyecto)
 # ==================================================
 
 def calc_tps(side: str, entry: float) -> tuple:
@@ -218,43 +225,24 @@ def support_resistance(df: pd.DataFrame, lookback: int = 20) -> List[float]:
     return sorted(levels)
 
 
-# -- Filtro de sesión (compartido por todas las estrategias) --
 def is_valid_session(ts: pd.Timestamp, session_filter: str = "24h") -> bool:
-    """
-    Verifica si el timestamp está en sesión válida de trading.
-    
-    Args:
-        ts: Timestamp UTC de la vela
-        session_filter: Tipo de filtro
-            - "24h": opera 24/5 (default)
-            - "eu_ny": solo Europa+NY (08:00-22:00 UTC)
-            - "ny_only": solo NY (13:00-22:00 UTC)
-    
-    Returns:
-        True si está en sesión válida
-    """
+    """Verifica si el timestamp está en sesión válida de trading."""
     if session_filter == "24h":
         return True
     
     hour_utc = ts.hour
     
     if session_filter == "eu_ny":
-        # Europa abre 08:00, NY cierra 22:00 UTC
         return 8 <= hour_utc < 22
     
     if session_filter == "ny_only":
-        # NY: 13:00-22:00 UTC
         return 13 <= hour_utc < 22
     
-    return True  # default: operar siempre
+    return True
 
 
-# -- Filtro EMA duro (compartido por todas las estrategias) --
 def check_ema_hard(window: pd.DataFrame, side: str) -> bool:
-    """
-    Verifica EMA50 > EMA200 para BUY, EMA50 < EMA200 para SELL.
-    Retorna True si pasa el filtro. True también si no hay datos.
-    """
+    """Verifica EMA50 > EMA200 para BUY, EMA50 < EMA200 para SELL."""
     if len(window) < 201:
         return True
     ema50  = float(ema_fn(window["close"], 50).iloc[-1])
@@ -264,109 +252,10 @@ def check_ema_hard(window: pd.DataFrame, side: str) -> bool:
     return (ema50 > ema200) if side == "BUY" else (ema50 < ema200)
 
 
-# -- Breakout --
-def scan_breakout(
-    df_h1: pd.DataFrame,
-    df_d1: pd.DataFrame,
-    i: int,
-    ema_filter: bool = False,
-    debug: bool = False,
-) -> Optional[BacktestTrade]:
-    """
-    Breakout de zona D1 con entrada MARKET.
-    
-    Setup SELL: precio cruza daily_low - buffer
-                → SELL MARKET inmediatamente
-    Setup BUY:  precio cruza daily_high + buffer
-                → BUY MARKET inmediatamente
-    
-    SL se coloca desde el nivel D1, no desde current_price.
-    """
-    if i < 30:
-        return None
+# ==================================================
+# REVERSAL - CON FILTROS AVANZADOS
+# ==================================================
 
-    window = df_h1.iloc[max(0, i - 100):i + 1].copy()
-    current_price = float(window["close"].iloc[-1])
-    ts = window.index[-1]
-
-    atr_val = float(atr_fn(window).iloc[-1])
-    if pd.isna(atr_val) or atr_val <= 0:
-        return None
-
-    # High/Low del día anterior desde D1
-    d1_before = df_d1[df_d1.index < ts]
-    if len(d1_before) < 2:
-        if debug and i == 500:
-            print(f"DEBUG [{i}]: D1 data insuficiente, len={len(d1_before)}")
-        return None
-    
-    prev_day = d1_before.iloc[-1]
-    daily_high = float(prev_day["high"])
-    daily_low  = float(prev_day["low"])
-
-    breakout_buffer = -5.0  # Negativo = entrar DENTRO del rango
-    sell_level = daily_low - breakout_buffer  # daily_low + 5
-    buy_level  = daily_high + breakout_buffer  # daily_high - 5
-
-    if debug and i == 500:
-        print(f"DEBUG [{i}]: current_price={current_price:.2f}, "
-              f"sell_level={sell_level:.2f}, buy_level={buy_level:.2f}, "
-              f"daily_high={daily_high:.2f}, daily_low={daily_low:.2f}")
-
-    # SELL BREAKOUT — entrada MARKET, SL desde daily_low
-    if current_price < sell_level:
-        entry = round(current_price, 2)
-        sl = round(daily_low + _SL_DISTANCE, 2)  # SL encima del nivel roto
-        tp1, tp2, tp3 = calc_tps("SELL", entry)
-        if ema_filter and not check_ema_hard(window, "SELL"):
-            return None
-        
-        trade = BacktestTrade(
-            strategy="BREAKOUT", side="SELL",
-            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-            entry_time=ts,
-        )
-        
-        # NUEVO: Extraer features ML
-        if ML_ENABLED:
-            try:
-                features = extract_features(df=window, signal_side="SELL")
-                for key, value in features.items():
-                    setattr(trade, key, value)
-            except Exception as e:
-                print(f"⚠️  Error extrayendo features: {e}")
-        
-        return trade
-
-    # BUY BREAKOUT — entrada MARKET, SL desde daily_high
-    if current_price > buy_level:
-        entry = round(current_price, 2)
-        sl = round(daily_high - _SL_DISTANCE, 2)  # SL debajo del nivel roto
-        tp1, tp2, tp3 = calc_tps("BUY", entry)
-        if ema_filter and not check_ema_hard(window, "BUY"):
-            return None
-        
-        trade = BacktestTrade(
-            strategy="BREAKOUT", side="BUY",
-            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-            entry_time=ts,
-        )
-        
-        # NUEVO: Extraer features ML
-        if ML_ENABLED:
-            try:
-                features = extract_features(df=window, signal_side="BUY")
-                for key, value in features.items():
-                    setattr(trade, key, value)
-            except Exception as e:
-                print(f"⚠️  Error extrayendo features: {e}")
-        
-        return trade
-    
-    return None
-
-
-# -- Reversal --
 def scan_reversal(
     df_h1: pd.DataFrame,
     i: int,
@@ -375,7 +264,23 @@ def scan_reversal(
     rsi_oversold: float = 45.0,
     rsi_overbought: float = 55.0,
     proximity: float = 8.0,
+    # NUEVOS PARÁMETROS AVANZADOS
+    enable_advanced: bool = False,
+    strict_session: bool = False,
+    order_blocks: bool = False,
+    impulse_filter: bool = False,
+    min_sr_touches: int = 2,
 ) -> Optional[BacktestTrade]:
+    """
+    Reversal strategy con filtros avanzados opcionales.
+    
+    Filtros avanzados:
+    - strict_session: Solo London open (08-10h), NY open (15-17h), Overlap (13-16h)
+    - min_sr_touches: Mínimo toques para nivel S/R válido (default 2, advanced 3+)
+    - impulse_filter: Requiere vela de impulso >1.5x ATR en últimas 5 velas
+    - order_blocks: Detecta Order Blocks (zonas institucionales)
+    - enable_advanced: Activa TODOS los filtros + volume confirmation
+    """
     if i < 30:
         return None
 
@@ -383,8 +288,15 @@ def scan_reversal(
     current_price = float(window["close"].iloc[-1])
     ts = window.index[-1]
 
-    # Filtro de sesión
-    if not is_valid_session(ts, session_filter):
+    # ========================================================================
+    # FILTRO AVANZADO 1: Sesión ultra-selectiva
+    # ========================================================================
+    if strict_session or enable_advanced:
+        hour = ts.hour
+        # Solo London open (08-10), NY open (15-17), y Overlap (13-16)
+        if not ((8 <= hour < 10) or (13 <= hour < 17)):
+            return None
+    elif not is_valid_session(ts, session_filter):
         return None
 
     levels = support_resistance(window, lookback=20)
@@ -400,7 +312,79 @@ def scan_reversal(
     if abs(current_price - closest) > proximity:
         return None
 
-    # BUY SIGNAL
+    # ========================================================================
+    # FILTRO AVANZADO 2: S/R Quality (mínimo toques)
+    # ========================================================================
+    if enable_advanced or min_sr_touches > 2:
+        touches = 0
+        for j in range(max(0, len(window) - 50), len(window)):
+            candle = window.iloc[j]
+            if abs(candle['low'] - closest) < 3.0 or abs(candle['high'] - closest) < 3.0:
+                touches += 1
+        
+        if touches < min_sr_touches:
+            return None  # Nivel débil, rechazar
+
+    # ========================================================================
+    # FILTRO AVANZADO 3: Impulse confirmation
+    # ========================================================================
+    if impulse_filter or enable_advanced:
+        has_impulse = False
+        for j in range(max(0, len(window) - 5), len(window)):
+            candle = window.iloc[j]
+            candle_size = abs(candle['close'] - candle['open'])
+            if candle_size > (1.5 * atr_val):
+                has_impulse = True
+                break
+        
+        if not has_impulse:
+            return None  # Sin impulso reciente, rechazar
+
+    # ========================================================================
+    # FILTRO AVANZADO 4: Volume confirmation
+    # ========================================================================
+    if enable_advanced:
+        current_volume = float(window['tick_volume'].iloc[-1])
+        avg_volume = float(window['tick_volume'].tail(20).mean())
+        if current_volume < (avg_volume * 1.3):
+            return None  # Bajo volumen, rechazar
+
+    # ========================================================================
+    # FILTRO AVANZADO 5: Order Blocks
+    # ========================================================================
+    if order_blocks or enable_advanced:
+        in_order_block = False
+        for j in range(max(0, len(window) - 30), len(window) - 1):
+            curr = window.iloc[j]
+            next_candle = window.iloc[j + 1]
+            
+            curr_size = abs(curr['close'] - curr['open'])
+            next_size = abs(next_candle['close'] - next_candle['open'])
+            
+            # Bullish OB para BUY
+            if current_rsi < rsi_oversold:
+                if (curr['close'] < curr['open'] and 
+                    next_candle['close'] > next_candle['open'] and
+                    next_size > (1.5 * atr_val)):
+                    if curr['low'] <= current_price <= curr['high']:
+                        in_order_block = True
+                        break
+            
+            # Bearish OB para SELL
+            if current_rsi > rsi_overbought:
+                if (curr['close'] > curr['open'] and
+                    next_candle['close'] < next_candle['open'] and
+                    next_size > (1.5 * atr_val)):
+                    if curr['low'] <= current_price <= curr['high']:
+                        in_order_block = True
+                        break
+        
+        if not in_order_block:
+            return None
+
+    # ========================================================================
+    # Generar señales
+    # ========================================================================
     if current_price <= closest and current_rsi < rsi_oversold:
         if ema_filter and not check_ema_hard(window, "BUY"):
             return None
@@ -414,14 +398,10 @@ def scan_reversal(
             entry_time=ts,
         )
         
-        # NUEVO: Extraer features ML (con sr_level)
+        # Extraer features ML
         if ML_ENABLED:
             try:
-                features = extract_features(
-                    df=window,
-                    signal_side="BUY",
-                    sr_level=closest
-                )
+                features = extract_features(df=window, signal_side="BUY", sr_level=closest)
                 for key, value in features.items():
                     setattr(trade, key, value)
             except Exception as e:
@@ -429,7 +409,6 @@ def scan_reversal(
         
         return trade
 
-    # SELL SIGNAL
     if current_price >= closest and current_rsi > rsi_overbought:
         if ema_filter and not check_ema_hard(window, "SELL"):
             return None
@@ -443,14 +422,10 @@ def scan_reversal(
             entry_time=ts,
         )
         
-        # NUEVO: Extraer features ML (con sr_level)
+        # Extraer features ML
         if ML_ENABLED:
             try:
-                features = extract_features(
-                    df=window,
-                    signal_side="SELL",
-                    sr_level=closest
-                )
+                features = extract_features(df=window, signal_side="SELL", sr_level=closest)
                 for key, value in features.items():
                     setattr(trade, key, value)
             except Exception as e:
@@ -461,7 +436,93 @@ def scan_reversal(
     return None
 
 
-# -- Trend --
+# ==================================================
+# BREAKOUT
+# ==================================================
+
+def scan_breakout(
+    df_h1: pd.DataFrame,
+    df_d1: pd.DataFrame,
+    i: int,
+    ema_filter: bool = False,
+    debug: bool = False,
+) -> Optional[BacktestTrade]:
+    if i < 30:
+        return None
+
+    window = df_h1.iloc[max(0, i - 100):i + 1].copy()
+    current_price = float(window["close"].iloc[-1])
+    ts = window.index[-1]
+
+    atr_val = float(atr_fn(window).iloc[-1])
+    if pd.isna(atr_val) or atr_val <= 0:
+        return None
+
+    d1_before = df_d1[df_d1.index < ts]
+    if len(d1_before) < 2:
+        return None
+    
+    prev_day = d1_before.iloc[-1]
+    daily_high = float(prev_day["high"])
+    daily_low  = float(prev_day["low"])
+
+    breakout_buffer = -5.0
+    sell_level = daily_low - breakout_buffer
+    buy_level  = daily_high + breakout_buffer
+
+    if current_price < sell_level:
+        entry = round(current_price, 2)
+        sl = round(daily_low + _SL_DISTANCE, 2)
+        tp1, tp2, tp3 = calc_tps("SELL", entry)
+        if ema_filter and not check_ema_hard(window, "SELL"):
+            return None
+        
+        trade = BacktestTrade(
+            strategy="BREAKOUT", side="SELL",
+            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+            entry_time=ts,
+        )
+        
+        if ML_ENABLED:
+            try:
+                features = extract_features(df=window, signal_side="SELL")
+                for key, value in features.items():
+                    setattr(trade, key, value)
+            except Exception as e:
+                print(f"⚠️  Error extrayendo features: {e}")
+        
+        return trade
+
+    if current_price > buy_level:
+        entry = round(current_price, 2)
+        sl = round(daily_high - _SL_DISTANCE, 2)
+        tp1, tp2, tp3 = calc_tps("BUY", entry)
+        if ema_filter and not check_ema_hard(window, "BUY"):
+            return None
+        
+        trade = BacktestTrade(
+            strategy="BREAKOUT", side="BUY",
+            entry=entry, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+            entry_time=ts,
+        )
+        
+        if ML_ENABLED:
+            try:
+                features = extract_features(df=window, signal_side="BUY")
+                for key, value in features.items():
+                    setattr(trade, key, value)
+            except Exception as e:
+                print(f"⚠️  Error extrayendo features: {e}")
+        
+        return trade
+    
+    return None
+
+
+# ==================================================
+# TREND
+# ==================================================
+
 def scan_trend(
     df_h1: pd.DataFrame,
     i: int,
@@ -475,7 +536,6 @@ def scan_trend(
     current_price = float(window["close"].iloc[-1])
     ts = window.index[-1]
 
-    # Filtro de sesión
     if not is_valid_session(ts, session_filter):
         return None
 
@@ -493,7 +553,6 @@ def scan_trend(
     if abs(current_price - sma20) > proximity:
         return None
 
-    # BUY SIGNAL (uptrend)
     if sma20 > sma50 and current_price >= sma20:
         if ema_filter and not check_ema_hard(window, "BUY"):
             return None
@@ -507,15 +566,9 @@ def scan_trend(
             entry_time=ts,
         )
         
-        # NUEVO: Extraer features ML (con SMAs)
         if ML_ENABLED:
             try:
-                features = extract_features(
-                    df=window,
-                    signal_side="BUY",
-                    sma_fast=sma20,
-                    sma_slow=sma50
-                )
+                features = extract_features(df=window, signal_side="BUY", sma_fast=sma20, sma_slow=sma50)
                 for key, value in features.items():
                     setattr(trade, key, value)
             except Exception as e:
@@ -523,7 +576,6 @@ def scan_trend(
         
         return trade
 
-    # SELL SIGNAL (downtrend)
     if sma20 < sma50 and current_price <= sma20:
         if ema_filter and not check_ema_hard(window, "SELL"):
             return None
@@ -537,15 +589,9 @@ def scan_trend(
             entry_time=ts,
         )
         
-        # NUEVO: Extraer features ML (con SMAs)
         if ML_ENABLED:
             try:
-                features = extract_features(
-                    df=window,
-                    signal_side="SELL",
-                    sma_fast=sma20,
-                    sma_slow=sma50
-                )
+                features = extract_features(df=window, signal_side="SELL", sma_fast=sma20, sma_slow=sma50)
                 for key, value in features.items():
                     setattr(trade, key, value)
             except Exception as e:
@@ -557,10 +603,10 @@ def scan_trend(
 
 
 # ==================================================
-# SIMULACIÓN DE SALIDAS (SL/TP hit)
+# SIMULACIÓN DE SALIDAS
 # ==================================================
 
-PNL_PER_DOLLAR = 0.05  # 0.05 lot × $1 = $0.05 por pip en XAUUSD mini
+PNL_PER_DOLLAR = 0.05
 
 def simulate_exit(
     trade: BacktestTrade,
@@ -569,14 +615,6 @@ def simulate_exit(
     tp1_only: bool = False,
     spread_cost: float = 0.0,
 ) -> BacktestTrade:
-    """
-    Recorre las velas siguientes buscando cuál se toca primero: SL o TP.
-    Usa el high/low de cada vela para detectar el toque.
-    Máximo 200 velas hacia adelante (~200 horas en H1).
-
-    tp1_only=True: ignora TP2/TP3, cierra todo en TP1.
-    spread_cost: costo del spread en dólares (típico: $0.30)
-    """
     max_bars = min(entry_i + 201, len(df))
     sl_pnl  = round(-(_SL_DISTANCE * 10 * PNL_PER_DOLLAR) - spread_cost, 2)
     tp1_pnl = round(_TP_DISTANCES[0] * 10 * PNL_PER_DOLLAR - spread_cost, 2)
@@ -640,7 +678,6 @@ def simulate_exit(
                 trade.pnl        = tp1_pnl
                 return trade
 
-    # No se tocó nada — queda OPEN
     return trade
 
 
@@ -661,12 +698,13 @@ def run_backtest(
     rsi_oversold: float = 45.0,
     rsi_overbought: float = 55.0,
     proximity: float = 8.0,
+    # NUEVOS PARÁMETROS AVANZADOS
+    enable_advanced: bool = False,
+    strict_session: bool = False,
+    order_blocks: bool = False,
+    impulse_filter: bool = False,
+    min_sr_touches: int = 2,
 ) -> List[BacktestResult]:
-    """
-    Ejecuta backtest para las estrategias seleccionadas.
-    
-    fix_lookahead=True: entrada en vela i+1 (realista) en vez de vela i
-    """
     results_map = {s: BacktestResult(strategy=s) for s in strategies}
     last_trade_i = -999
 
@@ -688,33 +726,27 @@ def run_backtest(
                 session_filter=session_filter,
                 rsi_oversold=rsi_oversold,
                 rsi_overbought=rsi_overbought,
-                proximity=proximity
+                proximity=proximity,
+                enable_advanced=enable_advanced,
+                strict_session=strict_session,
+                order_blocks=order_blocks,
+                impulse_filter=impulse_filter,
+                min_sr_touches=min_sr_touches,
             )
             if signal:
                 strategy_name = "REVERSAL"
 
         if signal is None and "TREND" in strategies:
-            signal = scan_trend(
-                df_h1, i,
-                ema_filter=ema_filter,
-                session_filter=session_filter
-            )
+            signal = scan_trend(df_h1, i, ema_filter=ema_filter, session_filter=session_filter)
             if signal:
                 strategy_name = "TREND"
 
         if signal:
-            # fix_lookahead: entrar en vela i+1
             entry_index = i + 1 if fix_lookahead else i
             if entry_index >= len(df_h1):
                 continue
             
-            # Simular salida
-            closed_trade = simulate_exit(
-                signal, df_h1, entry_index,
-                tp1_only=tp1_only,
-                spread_cost=spread_cost
-            )
-            
+            closed_trade = simulate_exit(signal, df_h1, entry_index, tp1_only=tp1_only, spread_cost=spread_cost)
             results_map[strategy_name].trades.append(closed_trade)
             last_trade_i = entry_index
 
@@ -733,6 +765,11 @@ def print_report(
     ema_filter: bool = False,
     session_filter: str = "24h",
     fix_lookahead: bool = False,
+    enable_advanced: bool = False,
+    strict_session: bool = False,
+    order_blocks: bool = False,
+    impulse_filter: bool = False,
+    min_sr_touches: int = 2,
 ):
     print(f"\n{'='*60}")
     print(f"  BACKTEST - {timeframe} ({months} meses)")
@@ -741,6 +778,22 @@ def print_report(
     print(f"  EMA filter      : {'SÍ' if ema_filter else 'NO'}")
     print(f"  Session filter  : {session_filter.upper()}")
     print(f"  Fix lookahead   : {'SÍ' if fix_lookahead else 'NO'}")
+    
+    # Mostrar filtros avanzados si están activos
+    if enable_advanced or strict_session or order_blocks or impulse_filter or min_sr_touches > 2:
+        print(f"  {'---ADVANCED FILTERS---':^60}")
+        if enable_advanced:
+            print(f"  All advanced    : ✅ SÍ (session+OB+impulse+volume+quality)")
+        else:
+            if strict_session:
+                print(f"  Strict session  : ✅ SÍ (London/NY open only)")
+            if order_blocks:
+                print(f"  Order Blocks    : ✅ SÍ")
+            if impulse_filter:
+                print(f"  Impulse filter  : ✅ SÍ (>1.5x ATR)")
+            if min_sr_touches > 2:
+                print(f"  S/R quality     : ✅ SÍ (min {min_sr_touches} touches)")
+    
     print(f"{'='*60}\n")
 
     grand_trades = 0
@@ -790,13 +843,6 @@ def print_report(
 
 
 def save_csv(results: List[BacktestResult], filename: str = "backtest_trades.csv") -> None:
-    """
-    Guarda todos los trades en CSV incluyendo FEATURES ML (MODIFICADO - FASE 2).
-    
-    El CSV incluirá:
-    - Columnas básicas: strategy, side, entry_time, etc.
-    - Features ML: rsi, atr, momentum_3, volume_ratio, etc. (si ML_ENABLED=True)
-    """
     rows = []
     for r in results:
         for t in r.trades:
@@ -815,16 +861,12 @@ def save_csv(results: List[BacktestResult], filename: str = "backtest_trades.csv
                 "pnl":        t.pnl,
             }
             
-            # NUEVO: Agregar features ML dinámicas
+            # Agregar features ML dinámicas
             if ML_ENABLED:
                 for attr_name in dir(t):
-                    # Excluir métodos privados y atributos básicos
                     if attr_name.startswith('_') or attr_name in row:
                         continue
-                    
                     attr_value = getattr(t, attr_name, None)
-                    
-                    # Solo agregar si es numérico (feature)
                     if isinstance(attr_value, (int, float)):
                         row[attr_name] = attr_value
             
@@ -834,7 +876,6 @@ def save_csv(results: List[BacktestResult], filename: str = "backtest_trades.csv
         df = pd.DataFrame(rows)
         df.to_csv(filename, index=False)
         
-        # Contar features
         basic_cols = ['strategy', 'side', 'entry_time', 'exit_time', 'entry', 
                      'sl', 'tp1', 'tp2', 'tp3', 'exit_price', 'result', 'pnl']
         feature_cols = [c for c in df.columns if c not in basic_cols]
@@ -854,59 +895,49 @@ def save_csv(results: List[BacktestResult], filename: str = "backtest_trades.csv
 # ==================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtester del bot autónomo con ML feature extraction")
-    parser.add_argument("--months",       type=int,   default=3,
-                        help="Meses de historia (default: 3)")
-    parser.add_argument("--timeframe",    type=str,   default="H1",
-                        help="Timeframe H1/H4/M15 (default: H1)")
-    parser.add_argument("--strategy",     type=str,   default="ALL",
-                        help="BREAKOUT/REVERSAL/TREND/ALL (default: ALL)")
-    parser.add_argument("--cooldown",     type=int,   default=3,
-                        help="Velas de cooldown entre señales (default: 3)")
-    parser.add_argument("--tp1-only",     action="store_true",
-                        help="Cerrar todo en TP1, ignorar TP2/TP3")
-    parser.add_argument("--ema-filter",   action="store_true",
-                        help="Filtro EMA 50/200 duro (bloquea señales contra tendencia)")
-    parser.add_argument("--session",      type=str,   default="24h",
-                        choices=["24h", "eu_ny", "ny_only"],
-                        help="Filtro de sesión: 24h (default), eu_ny (08-22 UTC), ny_only (13-22 UTC)")
-    parser.add_argument("--fix-lookahead", action="store_true",
-                        help="Entrada en vela i+1 (realista) en vez de vela i")
-    parser.add_argument("--spread",       type=float, default=0.30,
-                        help="Costo del spread en dólares (default: 0.30)")
-    parser.add_argument("--rsi-oversold", type=float, default=45.0,
-                        help="RSI oversold para Reversal (default: 45.0)")
-    parser.add_argument("--rsi-overbought", type=float, default=55.0,
-                        help="RSI overbought para Reversal (default: 55.0)")
-    parser.add_argument("--proximity",    type=float, default=8.0,
-                        help="Proximity a S/R para Reversal en pips (default: 8.0)")
-    parser.add_argument("--sl-distance",  type=float, default=6.0,
-                        help="Distancia del SL en dólares (default: 6.0)")
-    parser.add_argument("--tp1-distance", type=float, default=5.0,
-                        help="Distancia del TP1 en dólares (default: 5.0)")
-    parser.add_argument("--csv",          action="store_true",
-                        help="Guardar trades en CSV (con features ML si disponible)")
+    parser = argparse.ArgumentParser(description="Backtester con filtros avanzados")
+    parser.add_argument("--months",       type=int,   default=3)
+    parser.add_argument("--timeframe",    type=str,   default="H1")
+    parser.add_argument("--strategy",     type=str,   default="ALL")
+    parser.add_argument("--cooldown",     type=int,   default=3)
+    parser.add_argument("--tp1-only",     action="store_true")
+    parser.add_argument("--ema-filter",   action="store_true")
+    parser.add_argument("--session",      type=str,   default="24h", choices=["24h", "eu_ny", "ny_only"])
+    parser.add_argument("--fix-lookahead", action="store_true")
+    parser.add_argument("--spread",       type=float, default=0.30)
+    parser.add_argument("--rsi-oversold", type=float, default=45.0)
+    parser.add_argument("--rsi-overbought", type=float, default=55.0)
+    parser.add_argument("--proximity",    type=float, default=8.0)
+    parser.add_argument("--sl-distance",  type=float, default=6.0)
+    parser.add_argument("--tp1-distance", type=float, default=5.0)
+    parser.add_argument("--csv",          action="store_true")
+    
+    # NUEVOS PARÁMETROS AVANZADOS
+    parser.add_argument("--advanced",     action="store_true",
+                       help="Enable ALL advanced filters (session+OB+impulse+volume+quality)")
+    parser.add_argument("--strict-session", action="store_true",
+                       help="Only London/NY open hours (08-10h, 13-17h)")
+    parser.add_argument("--order-blocks", action="store_true",
+                       help="Enable Order Blocks detection")
+    parser.add_argument("--impulse-filter", action="store_true",
+                       help="Require impulse candle >1.5x ATR")
+    parser.add_argument("--min-touches",  type=int, default=2,
+                       help="Minimum S/R level touches (default 2, advanced 3+)")
+    
     args = parser.parse_args()
 
-    # Aplicar SL/TP a las variables globales
     global _SL_DISTANCE, _TP_DISTANCES
     _SL_DISTANCE  = args.sl_distance
     tp1 = args.tp1_distance
-    # TP2 y TP3 escalan proporcionalmente al cambio de TP1
-    # Base original: TP1=5, TP2=11, TP3=16
-    # Ratio: TP2 = TP1×2.2, TP3 = TP1×3.2
     tp2 = round(tp1 * 2.2, 1)
     tp3 = round(tp1 * 3.2, 1)
     _TP_DISTANCES = (tp1, tp2, tp3)
 
-    print(f"Config: SL=${_SL_DISTANCE} | TP1=${tp1} TP2=${tp2} TP3=${tp3} "
-          f"| RR={tp1/_SL_DISTANCE:.2f}:1")
+    print(f"Config: SL=${_SL_DISTANCE} | TP1=${tp1} TP2=${tp2} TP3=${tp3} | RR={tp1/_SL_DISTANCE:.2f}:1")
 
-    # Conectar MT5
     if not connect_mt5():
         sys.exit(1)
 
-    # Determinar estrategias
     all_strategies = ["BREAKOUT", "REVERSAL", "TREND"]
     if args.strategy.upper() == "ALL":
         strategies = all_strategies
@@ -916,45 +947,48 @@ def main():
         print(f"❌ Estrategia inválida: {args.strategy}")
         sys.exit(1)
 
-    tp1_only       = args.tp1_only
-    ema_filter     = args.ema_filter
-    session_filter = args.session
-    fix_lookahead  = args.fix_lookahead
-    spread_cost    = args.spread
-    rsi_oversold   = args.rsi_oversold
-    rsi_overbought = args.rsi_overbought
-    proximity      = args.proximity
-
-    # Descargar datos
     df_h1 = get_historical_data(args.timeframe, args.months)
     df_d1 = get_d1_data()
 
-    # Correr backtest
     results = run_backtest(
         df_h1, df_d1, strategies,
         cooldown_bars=args.cooldown,
-        tp1_only=tp1_only,
-        ema_filter=ema_filter,
-        session_filter=session_filter,
-        fix_lookahead=fix_lookahead,
-        spread_cost=spread_cost,
-        rsi_oversold=rsi_oversold,
-        rsi_overbought=rsi_overbought,
-        proximity=proximity,
+        tp1_only=args.tp1_only,
+        ema_filter=args.ema_filter,
+        session_filter=args.session,
+        fix_lookahead=args.fix_lookahead,
+        spread_cost=args.spread,
+        rsi_oversold=args.rsi_oversold,
+        rsi_overbought=args.rsi_overbought,
+        proximity=args.proximity,
+        enable_advanced=args.advanced,
+        strict_session=args.strict_session,
+        order_blocks=args.order_blocks,
+        impulse_filter=args.impulse_filter,
+        min_sr_touches=args.min_touches,
     )
 
-    # Mostrar reporte
-    print_report(results, args.timeframe, args.months, tp1_only=tp1_only, 
-                ema_filter=ema_filter, session_filter=session_filter, 
-                fix_lookahead=fix_lookahead)
+    print_report(
+        results, args.timeframe, args.months,
+        tp1_only=args.tp1_only,
+        ema_filter=args.ema_filter,
+        session_filter=args.session,
+        fix_lookahead=args.fix_lookahead,
+        enable_advanced=args.advanced,
+        strict_session=args.strict_session,
+        order_blocks=args.order_blocks,
+        impulse_filter=args.impulse_filter,
+        min_sr_touches=args.min_touches,
+    )
 
-    # Guardar CSV si se pidió
     if args.csv:
         suffix = f"_sl{int(_SL_DISTANCE)}_tp{int(args.tp1_distance)}"
-        if tp1_only:
+        if args.tp1_only:
             suffix += "_tp1only"
         if ML_ENABLED:
-            suffix += "_ml"  # Indicador de que tiene features ML
+            suffix += "_ml"
+        if args.advanced:
+            suffix += "_advanced"
         save_csv(results, filename=f"backtest_trades{suffix}.csv")
 
     mt5.shutdown()
