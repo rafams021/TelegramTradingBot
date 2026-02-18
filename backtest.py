@@ -521,7 +521,7 @@ def run_backtest(df_h1, df_d1, strategies, cooldown_bars=3, tp1_only=False, ema_
             # SUPREME MODE: Usa ReversalStrategy class
             # ================================================================
             if supreme_mode and supreme_strategy:
-                window = df_h1.iloc[max(0, i - 100):i + 1].copy()
+                window = df_h1.iloc[max(0, i - 250):i + 1].copy()  # Más historia para OB/FVG/EMA
                 current_price = float(window["close"].iloc[-1])
                 ts = window.index[-1]
                 
