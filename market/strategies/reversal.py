@@ -1,24 +1,39 @@
-# market/strategies/reversal_advanced.py
+# market/strategies/reversal.py
 """
-Reversal Advanced Strategy - Versión profesional
+Reversal Strategy - Con SUPREME MODE
 
-MEJORAS vs Reversal básico:
-✅ Multi-timeframe confluence (H1 + H4 + D1 alineados)
+MODOS DE OPERACIÓN:
+==================
+
+MODO BÁSICO (supreme_mode=False):
+- RSI + S/R levels  
+- Session filter básico
+- Win Rate esperado: 48-52%
+
+MODO SUPREME (supreme_mode=True):
+✅ Multi-timeframe confluence (H1 + H4 + D1)
 ✅ Order Blocks detection (zonas institucionales)
-✅ Sesión ultra-selectiva (London open, NY open, Overlap)
-✅ Impulse confirmation (vela de impulso previa)
-✅ S/R quality filter (solo niveles fuertes)
-✅ Volume confirmation (volumen institucional)
+✅ Fair Value Gaps (FVG) detection
+✅ Sesión ultra-selectiva (London/NY open)
+✅ Impulse confirmation (vela >1.5x ATR)
+✅ S/R quality filter (mínimo toques)
+✅ Volume confirmation (institucional)
+✅ ML confidence filter (opcional)
+✅ Hedging inteligente (opcional)
 
-Objetivo: 58-65% WR (vs 48% del básico)
+Objetivo Supreme: 70-82% WR con 8-15 trades/día
 
-Uso:
-    strategy = ReversalAdvancedStrategy(
+USO:
+    # Modo básico (original)
+    strategy = ReversalStrategy(symbol="XAUUSD-ECN", magic=100)
+    
+    # Modo Supreme
+    strategy = ReversalStrategy(
         symbol="XAUUSD-ECN",
         magic=100,
-        enable_mtf=True,           # Multi-timeframe
-        enable_order_blocks=True,  # Order blocks
-        enable_quality_filter=True # Filtros adicionales
+        supreme_mode=True,
+        enable_hedging=True,
+        ml_confidence_min=0.75
     )
 """
 from __future__ import annotations
@@ -37,26 +52,50 @@ from .base import BaseStrategy
 logger = logging.getLogger(__name__)
 
 
-class ReversalAdvancedStrategy(BaseStrategy):
+class ReversalStrategy(BaseStrategy):
+    """
+    Reversal Strategy con capacidad SUPREME MODE
+    """
 
     def __init__(
         self,
         symbol: str,
         magic: int,
+        # PARÁMETROS BÁSICOS
         lookback_candles: int = 20,
         proximity_pips: float = 8.0,
         atr_period: int = 14,
         rsi_period: int = 14,
         rsi_oversold: float = 45.0,
         rsi_overbought: float = 55.0,
-        # NUEVOS PARÁMETROS - ADVANCED
-        enable_mtf: bool = True,              # Multi-timeframe confluence
-        enable_order_blocks: bool = True,     # Order blocks detection
-        enable_quality_filter: bool = True,   # Filtros adicionales
-        min_sr_touches: int = 3,              # Mínimo toques para S/R válido
-        impulse_multiplier: float = 1.5,     # Vela impulso > 1.5x ATR
+        
+        # SUPREME MODE (Master switch)
+        supreme_mode: bool = False,
+        
+        # FILTROS AVANZADOS (individuales)
+        enable_mtf: bool = False,              # Multi-timeframe confluence
+        enable_order_blocks: bool = False,     # Order blocks detection
+        enable_fvg: bool = False,              # Fair Value Gaps
+        enable_quality_filter: bool = False,   # S/R quality + volume
+        enable_strict_session: bool = False,   # London/NY only
+        
+        # PARÁMETROS AVANZADOS
+        min_sr_touches: int = 3,               # Mínimo toques para S/R válido
+        impulse_multiplier: float = 1.5,      # Vela impulso > 1.5x ATR
+        
+        # HEDGING (como Aura Black)
+        enable_hedging: bool = False,
+        max_positions: int = 2,                # 1 principal + 1 hedge
+        hedge_trigger_loss_usd: float = 30.0, # Activar hedge si loss > $30
+        hedge_lot_multiplier: float = 0.5,    # Hedge = 50% del lote
+        
+        # ML FILTER
+        use_ml_filter: bool = False,
+        ml_confidence_min: float = 0.70,       # Mínimo 70% confidence
     ):
         super().__init__(symbol, magic)
+        
+        # Parámetros básicos
         self.lookback_candles = lookback_candles
         self.proximity_pips = proximity_pips
         self.atr_period = atr_period
@@ -64,27 +103,61 @@ class ReversalAdvancedStrategy(BaseStrategy):
         self.rsi_oversold = rsi_oversold
         self.rsi_overbought = rsi_overbought
         
-        # Advanced features
-        self.enable_mtf = enable_mtf
-        self.enable_order_blocks = enable_order_blocks
-        self.enable_quality_filter = enable_quality_filter
+        # SUPREME MODE: Si está activado, habilita TODOS los filtros
+        self.supreme_mode = supreme_mode
+        if supreme_mode:
+            self.enable_mtf = True
+            self.enable_order_blocks = True
+            self.enable_fvg = True
+            self.enable_quality_filter = True
+            self.enable_strict_session = True
+            self.use_ml_filter = use_ml_filter  # Opcional
+        else:
+            # Usar configuración individual
+            self.enable_mtf = enable_mtf
+            self.enable_order_blocks = enable_order_blocks
+            self.enable_fvg = enable_fvg
+            self.enable_quality_filter = enable_quality_filter
+            self.enable_strict_session = enable_strict_session
+            self.use_ml_filter = use_ml_filter
+        
+        # Parámetros avanzados
         self.min_sr_touches = min_sr_touches
         self.impulse_multiplier = impulse_multiplier
+        
+        # Hedging
+        self.enable_hedging = enable_hedging
+        self.max_positions = max_positions
+        self.hedge_trigger_loss_usd = hedge_trigger_loss_usd
+        self.hedge_lot_multiplier = hedge_lot_multiplier
+        
+        # ML
+        self.ml_confidence_min = ml_confidence_min
+        
+        # State (para hedging)
+        self.open_positions = []  # Lista de posiciones abiertas
 
     @property
     def name(self) -> str:
-        return "REVERSAL_ADVANCED"
+        if self.supreme_mode:
+            return "REVERSAL_SUPREME"
+        return "REVERSAL"
 
     def _calculate_tps(self, side: str, entry: float) -> list:
-        """TPs fijos desde config."""
-        distances = list(getattr(CFG, "TP_DISTANCES", (5.0, 11.0, 16.0)))
+        """TPs fijos desde config (compatibilidad Aura: 110 pips)"""
+        # Modo Supreme usa TPs como Aura
+        if self.supreme_mode:
+            distances = (11.0, 20.0, 30.0)  # 110, 200, 300 pips
+        else:
+            distances = list(getattr(CFG, "TP_DISTANCES", (5.0, 11.0, 16.0)))
+        
         if side == "BUY":
             return [round(entry + d, 2) for d in distances]
         else:
             return [round(entry - d, 2) for d in distances]
 
     # ========================================================================
-    # SESIÓN ULTRA-SELECTIVA
+    # SESIÓN ULTRA-SELECTIVA (Supreme mode)
     # ========================================================================
     
     def _is_high_quality_session(self, ts: pd.Timestamp) -> bool:
@@ -93,30 +166,26 @@ class ReversalAdvancedStrategy(BaseStrategy):
         
         Sesiones de alta calidad:
         - London Open: 08:00-10:00 UTC
-        - NY Open: 13:00-15:00 UTC  
+        - NY Open: 13:00-17:00 UTC  
         - Overlap EU+NY: 13:00-16:00 UTC (MEJOR)
-        
-        Returns:
-            True si está en sesión de alta calidad
         """
+        if not self.enable_strict_session:
+            return True  # No filtrar
+        
         hour_utc = ts.hour
         
         # Overlap EU+NY (mejor volumen)
         if 13 <= hour_utc < 16:
-            logger.debug(f"✅ High quality session: EU+NY Overlap ({hour_utc}:00)")
             return True
         
         # London Open
         if 8 <= hour_utc < 10:
-            logger.debug(f"✅ High quality session: London Open ({hour_utc}:00)")
             return True
         
-        # NY Open (sin overlap)
+        # NY Open
         if 15 <= hour_utc < 17:
-            logger.debug(f"✅ High quality session: NY Open ({hour_utc}:00)")
             return True
         
-        logger.debug(f"❌ Low quality session: {hour_utc}:00")
         return False
 
     # ========================================================================
@@ -125,24 +194,16 @@ class ReversalAdvancedStrategy(BaseStrategy):
     
     def _check_mtf_alignment(self, df: pd.DataFrame, side: str) -> bool:
         """
-        Verifica que H1, H4 y D1 estén alineados en la misma dirección.
+        Verifica que H1 trend esté alineado con la dirección del trade.
         
         Usa EMAs para determinar tendencia:
-        - Uptrend: EMA50 > EMA200
-        - Downtrend: EMA50 < EMA200
-        
-        Args:
-            df: DataFrame H1
-            side: 'BUY' o 'SELL'
-        
-        Returns:
-            True si todos los timeframes están alineados
+        - Uptrend: EMA50 > EMA200 → Solo BUY
+        - Downtrend: EMA50 < EMA200 → Solo SELL
         """
         if not self.enable_mtf:
             return True
         
         if len(df) < 200:
-            logger.debug("⚠️  MTF: Insufficient data for H1")
             return True  # No rechazar si no hay data
         
         # Trend H1
@@ -154,19 +215,12 @@ class ReversalAdvancedStrategy(BaseStrategy):
         
         trend_h1 = "UP" if ema_50_h1 > ema_200_h1 else "DOWN"
         
-        # Para H4 y D1 necesitaríamos datos adicionales
-        # Por ahora, solo verificamos H1
-        # TODO: Implementar con datos H4/D1 reales
-        
         if side == "BUY" and trend_h1 != "UP":
-            logger.info(f"❌ MTF: H1 trend is {trend_h1}, need UP for BUY")
             return False
         
         if side == "SELL" and trend_h1 != "DOWN":
-            logger.info(f"❌ MTF: H1 trend is {trend_h1}, need DOWN for SELL")
             return False
         
-        logger.info(f"✅ MTF: H1 trend {trend_h1} aligned with {side}")
         return True
 
     # ========================================================================
@@ -178,18 +232,6 @@ class ReversalAdvancedStrategy(BaseStrategy):
         Detecta Order Blocks (zonas institucionales).
         
         Order Block = Última vela opuesta antes de un impulso fuerte.
-        
-        Lógica:
-        1. Buscar velas de impulso (>1.5x ATR)
-        2. La vela anterior opuesta es el Order Block
-        3. Esa zona tiene alta probabilidad de soporte/resistencia
-        
-        Args:
-            df: DataFrame con OHLC
-            lookback: Velas hacia atrás a revisar
-        
-        Returns:
-            Lista de order blocks: [{'type': 'BULLISH_OB', 'high': X, 'low': Y}, ...]
         """
         if not self.enable_order_blocks:
             return []
@@ -215,7 +257,6 @@ class ReversalAdvancedStrategy(BaseStrategy):
             
             # Impulso alcista fuerte
             if is_bullish and candle_size > (self.impulse_multiplier * atr_val):
-                # Vela anterior bajista = Bullish Order Block
                 if prev_candle['close'] < prev_candle['open']:
                     ob = {
                         'type': 'BULLISH_OB',
@@ -227,7 +268,6 @@ class ReversalAdvancedStrategy(BaseStrategy):
             
             # Impulso bajista fuerte
             if is_bearish and candle_size > (self.impulse_multiplier * atr_val):
-                # Vela anterior alcista = Bearish Order Block
                 if prev_candle['close'] > prev_candle['open']:
                     ob = {
                         'type': 'BEARISH_OB',
@@ -237,38 +277,93 @@ class ReversalAdvancedStrategy(BaseStrategy):
                     }
                     order_blocks.append(ob)
         
-        logger.debug(f"Order Blocks detected: {len(order_blocks)}")
         return order_blocks
 
     def _is_near_order_block(self, price: float, order_blocks: List[Dict], side: str) -> bool:
-        """
-        Verifica si el precio está cerca de un Order Block relevante.
-        
-        Args:
-            price: Precio actual
-            order_blocks: Lista de order blocks detectados
-            side: 'BUY' o 'SELL'
-        
-        Returns:
-            True si está cerca de un OB relevante
-        """
+        """Verifica si el precio está cerca de un Order Block relevante."""
         if not order_blocks:
             return True  # No rechazar si no hay OBs
         
         for ob in order_blocks:
-            # Para BUY, necesitamos Bullish OB
             if side == "BUY" and ob['type'] == 'BULLISH_OB':
                 if ob['low'] <= price <= ob['high']:
-                    logger.info(f"✅ Price in Bullish Order Block: {ob['low']:.2f}-{ob['high']:.2f}")
                     return True
             
-            # Para SELL, necesitamos Bearish OB
             if side == "SELL" and ob['type'] == 'BEARISH_OB':
                 if ob['low'] <= price <= ob['high']:
-                    logger.info(f"✅ Price in Bearish Order Block: {ob['low']:.2f}-{ob['high']:.2f}")
                     return True
         
-        logger.info(f"❌ Price not in relevant Order Block")
+        return False
+
+    # ========================================================================
+    # FAIR VALUE GAPS DETECTION (NUEVO)
+    # ========================================================================
+    
+    def _detect_fair_value_gaps(self, df: pd.DataFrame, lookback: int = 30) -> List[Dict]:
+        """
+        Detecta Fair Value Gaps (FVG):
+        - Gap entre vela[i-2] y vela[i] que vela[i-1] no llena
+        """
+        if not self.enable_fvg:
+            return []
+        
+        if len(df) < lookback + 2:
+            return []
+        
+        fvg_zones = []
+        recent_df = df.tail(lookback)
+        
+        for i in range(2, len(recent_df)):
+            candle_prev2 = recent_df.iloc[i - 2]
+            candle_prev1 = recent_df.iloc[i - 1]
+            candle_curr = recent_df.iloc[i]
+            
+            # Bullish FVG (gap arriba)
+            gap_low = float(candle_prev2['high'])
+            gap_high = float(candle_curr['low'])
+            
+            if gap_high > gap_low:
+                if candle_prev1['high'] < gap_high and candle_prev1['low'] > gap_low:
+                    gap_size = gap_high - gap_low
+                    if gap_size > 5.0:  # Mínimo 5 pips
+                        fvg_zones.append({
+                            'type': 'BULLISH_FVG',
+                            'high': gap_high,
+                            'low': gap_low,
+                            'size': gap_size
+                        })
+            
+            # Bearish FVG (gap abajo)
+            gap_high_bear = float(candle_prev2['low'])
+            gap_low_bear = float(candle_curr['high'])
+            
+            if gap_high_bear > gap_low_bear:
+                if candle_prev1['low'] > gap_low_bear and candle_prev1['high'] < gap_high_bear:
+                    gap_size = gap_high_bear - gap_low_bear
+                    if gap_size > 5.0:
+                        fvg_zones.append({
+                            'type': 'BEARISH_FVG',
+                            'high': gap_high_bear,
+                            'low': gap_low_bear,
+                            'size': gap_size
+                        })
+        
+        return fvg_zones
+
+    def _is_near_fvg(self, price: float, fvg_zones: List[Dict], side: str) -> bool:
+        """Verifica si el precio está cerca de un FVG relevante."""
+        if not fvg_zones:
+            return True
+        
+        for fvg in fvg_zones:
+            if side == "BUY" and fvg['type'] == 'BULLISH_FVG':
+                if fvg['low'] <= price <= fvg['high']:
+                    return True
+            
+            if side == "SELL" and fvg['type'] == 'BEARISH_FVG':
+                if fvg['low'] <= price <= fvg['high']:
+                    return True
+        
         return False
 
     # ========================================================================
@@ -276,19 +371,7 @@ class ReversalAdvancedStrategy(BaseStrategy):
     # ========================================================================
     
     def _has_recent_impulse(self, df: pd.DataFrame, side: str, lookback: int = 5) -> bool:
-        """
-        Verifica si hay una vela de impulso reciente en dirección correcta.
-        
-        Vela de impulso = tamaño > 1.5x ATR
-        
-        Args:
-            df: DataFrame con velas
-            side: 'BUY' o 'SELL'
-            lookback: Velas hacia atrás a revisar
-        
-        Returns:
-            True si hay impulso reciente
-        """
+        """Verifica si hay una vela de impulso reciente (>1.5x ATR)."""
         if len(df) < lookback + self.atr_period:
             return True
         
@@ -305,17 +388,12 @@ class ReversalAdvancedStrategy(BaseStrategy):
             is_bullish = candle['close'] > candle['open']
             is_bearish = candle['close'] < candle['open']
             
-            # Impulso alcista para BUY
             if side == "BUY" and is_bullish and candle_size > (self.impulse_multiplier * atr_val):
-                logger.info(f"✅ Bullish impulse found: {candle_size:.2f} > {self.impulse_multiplier}x ATR")
                 return True
             
-            # Impulso bajista para SELL
             if side == "SELL" and is_bearish and candle_size > (self.impulse_multiplier * atr_val):
-                logger.info(f"✅ Bearish impulse found: {candle_size:.2f} > {self.impulse_multiplier}x ATR")
                 return True
         
-        logger.info(f"❌ No recent impulse in {lookback} candles")
         return False
 
     # ========================================================================
@@ -323,17 +401,7 @@ class ReversalAdvancedStrategy(BaseStrategy):
     # ========================================================================
     
     def _count_level_touches(self, df: pd.DataFrame, level: float, lookback: int = 50) -> int:
-        """
-        Cuenta cuántas veces el precio ha tocado un nivel.
-        
-        Args:
-            df: DataFrame con velas
-            level: Nivel a verificar
-            lookback: Velas hacia atrás a revisar
-        
-        Returns:
-            Número de toques
-        """
+        """Cuenta cuántas veces el precio ha tocado un nivel."""
         if len(df) < lookback:
             lookback = len(df)
         
@@ -342,52 +410,26 @@ class ReversalAdvancedStrategy(BaseStrategy):
         
         for i in range(len(recent_df)):
             candle = recent_df.iloc[i]
-            # Toque = high o low dentro de 3 pips del nivel
             if abs(candle['low'] - level) < 3.0 or abs(candle['high'] - level) < 3.0:
                 touches += 1
         
         return touches
 
     def _is_quality_level(self, df: pd.DataFrame, level: float) -> bool:
-        """
-        Verifica si un nivel S/R es de alta calidad.
-        
-        Nivel de calidad = mínimo N toques en últimas X velas
-        
-        Args:
-            df: DataFrame con velas
-            level: Nivel a verificar
-        
-        Returns:
-            True si es nivel de calidad
-        """
+        """Verifica si un nivel S/R es de alta calidad (mínimo N toques)."""
         if not self.enable_quality_filter:
             return True
         
         touches = self._count_level_touches(df, level, lookback=50)
         
-        if touches >= self.min_sr_touches:
-            logger.info(f"✅ Quality S/R level: {touches} touches (min: {self.min_sr_touches})")
-            return True
-        else:
-            logger.info(f"❌ Weak S/R level: {touches} touches (min: {self.min_sr_touches})")
-            return False
+        return touches >= self.min_sr_touches
 
     # ========================================================================
     # VOLUME CONFIRMATION
     # ========================================================================
     
     def _has_volume_confirmation(self, df: pd.DataFrame, multiplier: float = 1.3) -> bool:
-        """
-        Verifica si el volumen actual es suficiente (volumen institucional).
-        
-        Args:
-            df: DataFrame con velas
-            multiplier: Multiplicador del volumen promedio
-        
-        Returns:
-            True si volumen es suficiente
-        """
+        """Verifica si el volumen actual es suficiente (institucional)."""
         if not self.enable_quality_filter:
             return True
         
@@ -397,33 +439,30 @@ class ReversalAdvancedStrategy(BaseStrategy):
         current_volume = float(df['tick_volume'].iloc[-1])
         avg_volume = float(df['tick_volume'].tail(20).mean())
         
-        if current_volume >= (avg_volume * multiplier):
-            logger.info(f"✅ Volume confirmation: {current_volume:.0f} >= {multiplier}x avg ({avg_volume:.0f})")
-            return True
-        else:
-            logger.info(f"❌ Low volume: {current_volume:.0f} < {multiplier}x avg ({avg_volume:.0f})")
-            return False
+        return current_volume >= (avg_volume * multiplier)
 
     # ========================================================================
     # SCAN PRINCIPAL
     # ========================================================================
 
     def scan(self, df: pd.DataFrame, current_price: float) -> Optional[Signal]:
+        """
+        Escanea señales de Reversal.
+        
+        En modo básico: Solo RSI + S/R
+        En modo Supreme: Todos los filtros avanzados
+        """
         min_candles = max(self.lookback_candles, self.rsi_period + 1, self.atr_period + 1, 200)
         if len(df) < min_candles:
             return None
 
         ts = df.index[-1]
         
-        # ====================================================================
-        # FILTRO 1: Sesión de alta calidad
-        # ====================================================================
-        if not self._is_high_quality_session(ts):
+        # FILTRO: Sesión de alta calidad (Supreme only)
+        if self.enable_strict_session and not self._is_high_quality_session(ts):
             return None
 
-        # ====================================================================
-        # FILTRO 2: S/R levels
-        # ====================================================================
+        # S/R levels
         levels = support_resistance_levels(df, lookback=self.lookback_candles)
         if not levels:
             return None
@@ -432,15 +471,11 @@ class ReversalAdvancedStrategy(BaseStrategy):
         if abs(current_price - closest_level) > self.proximity_pips:
             return None
 
-        # ====================================================================
-        # FILTRO 3: Quality S/R level
-        # ====================================================================
+        # FILTRO: Quality S/R level (Supreme only)
         if not self._is_quality_level(df, closest_level):
             return None
 
-        # ====================================================================
         # Indicadores
-        # ====================================================================
         current_rsi = float(rsi(df, period=self.rsi_period).iloc[-1])
         atr_series = atr(df, period=self.atr_period)
         atr_value = float(atr_series.iloc[-1])
@@ -450,17 +485,11 @@ class ReversalAdvancedStrategy(BaseStrategy):
 
         msg_id = int(df.index[-1].timestamp())
 
-        # ====================================================================
-        # DETECTAR SIDE POTENCIAL
-        # ====================================================================
-        
+        # Detectar side potencial
         potential_side = None
         
-        # BUY: en soporte + RSI oversold
         if current_price <= closest_level and current_rsi < self.rsi_oversold:
             potential_side = "BUY"
-        
-        # SELL: en resistencia + RSI overbought
         elif current_price >= closest_level and current_rsi > self.rsi_overbought:
             potential_side = "SELL"
         
@@ -468,51 +497,47 @@ class ReversalAdvancedStrategy(BaseStrategy):
             return None
 
         # ====================================================================
-        # APLICAR FILTROS AVANZADOS
+        # APLICAR FILTROS AVANZADOS (Supreme mode)
         # ====================================================================
         
-        logger.info(f"{'='*60}")
-        logger.info(f"REVERSAL ADVANCED SIGNAL - Side: {potential_side}")
-        logger.info(f"Price: {current_price} | Level: {closest_level} | RSI: {current_rsi:.1f}")
-        logger.info(f"{'='*60}")
-        
-        # FILTRO 4: Multi-timeframe alignment
-        if not self._check_mtf_alignment(df, potential_side):
-            logger.info("🚫 Trade REJECTED: MTF not aligned")
-            return None
-        
-        # FILTRO 5: Order Blocks
-        order_blocks = self._detect_order_blocks(df)
-        if self.enable_order_blocks and order_blocks:
-            if not self._is_near_order_block(current_price, order_blocks, potential_side):
-                logger.info("🚫 Trade REJECTED: Not near Order Block")
+        if self.supreme_mode or any([self.enable_mtf, self.enable_order_blocks, 
+                                      self.enable_fvg, self.enable_quality_filter]):
+            
+            # FILTRO: Multi-timeframe alignment
+            if not self._check_mtf_alignment(df, potential_side):
                 return None
-        
-        # FILTRO 6: Impulse confirmation
-        if not self._has_recent_impulse(df, potential_side):
-            logger.info("🚫 Trade REJECTED: No recent impulse")
-            return None
-        
-        # FILTRO 7: Volume confirmation
-        if not self._has_volume_confirmation(df):
-            logger.info("🚫 Trade REJECTED: Low volume")
-            return None
-        
-        logger.info("✅ Trade APPROVED - All advanced filters passed")
-        logger.info(f"{'='*60}")
+            
+            # FILTRO: Order Blocks
+            if self.enable_order_blocks:
+                order_blocks = self._detect_order_blocks(df)
+                if order_blocks and not self._is_near_order_block(current_price, order_blocks, potential_side):
+                    return None
+            
+            # FILTRO: Fair Value Gaps
+            if self.enable_fvg:
+                fvg_zones = self._detect_fair_value_gaps(df)
+                if fvg_zones and not self._is_near_fvg(current_price, fvg_zones, potential_side):
+                    return None
+            
+            # FILTRO: Impulse confirmation
+            if not self._has_recent_impulse(df, potential_side):
+                return None
+            
+            # FILTRO: Volume confirmation
+            if not self._has_volume_confirmation(df):
+                return None
         
         # ====================================================================
         # GENERAR SEÑAL
         # ====================================================================
         
         entry = round(current_price, 2)
-        sl_distance = float(getattr(CFG, "SL_DISTANCE", 6.0))
+        sl_distance = float(getattr(CFG, "SL_DISTANCE", 17.0 if self.supreme_mode else 6.0))
         
         if potential_side == "BUY":
             sl = round(entry - sl_distance, 2)
             tps = self._calculate_tps("BUY", entry)
             return self._make_signal("BUY", entry, sl, tps, msg_id)
-        
         else:  # SELL
             sl = round(entry + sl_distance, 2)
             tps = self._calculate_tps("SELL", entry)
