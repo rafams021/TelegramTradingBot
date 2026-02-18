@@ -1,8 +1,8 @@
 # main.py
 """
-TelegramTradingBot - MODO AUTÓNOMO
+TelegramTradingBot - Modo Autonomo
 
-Bot de trading completamente autónomo sin dependencia de Telegram.
+Bot de trading completamente autonomo.
 Genera y ejecuta señales usando MarketAnalyzer y estrategias propias.
 
 Arquitectura Dual Loop:
@@ -28,91 +28,79 @@ async def main():
     logger.event("BOOT_AUTONOMOUS")
 
     print("=" * 70)
-    print("  TELEGRAM TRADING BOT - MODO AUTÓNOMO")
+    print("  TRADING BOT - MODO AUTONOMO")
     print("=" * 70)
-    print(f"  Symbol: {CFG.SYMBOL}")
-    print(f"  Timeframe: H1 (candle loop) + M1 (tick loop)")
-    print(f"  Strategies: Reversal (Supreme), Trend, Momentum")
+    print(f"  Symbol    : {CFG.SYMBOL}")
+    print(f"  Timeframe : H1 (candle loop) + M1 (tick loop)")
+    print(f"  Strategies: Reversal, Trend, Momentum")
     print("=" * 70)
 
-    # ==========================================
-    # MT5 CONNECTION
-    # ==========================================
-    print("\n🔌 Conectando a MT5...")
-    
+    print("\nConectando a MT5...")
+
     mt5_client = MT5Client(
         login=CFG.MT5_LOGIN,
         password=CFG.MT5_PASSWORD,
         server=CFG.MT5_SERVER,
         symbol=CFG.SYMBOL,
-        deviation=getattr(CFG, "DEVIATION", 50),
-        magic=getattr(CFG, "MAGIC", 0),
-        dry_run=getattr(CFG, "DRY_RUN", False),
+        deviation=CFG.DEVIATION,
+        magic=CFG.MAGIC,
+        dry_run=CFG.DRY_RUN,
     )
 
     if not mt5_client.connect():
-        print(f" Error: No se pudo conectar a MT5")
-        print(f"   Login: {CFG.MT5_LOGIN}")
-        print(f"   Server: {CFG.MT5_SERVER}")
+        print(f"Error: No se pudo conectar a MT5")
+        print(f"  Login : {CFG.MT5_LOGIN}")
+        print(f"  Server: {CFG.MT5_SERVER}")
         logger.event("MT5_INIT_FAILED", login=CFG.MT5_LOGIN, server=CFG.MT5_SERVER)
         return
 
-    print(f" MT5 conectado")
-    print(f"   Login: {CFG.MT5_LOGIN}")
-    print(f"   Server: {CFG.MT5_SERVER}")
-    print(f"   Symbol: {CFG.SYMBOL}")
-    
+    print(f"MT5 conectado")
+    print(f"  Login : {CFG.MT5_LOGIN}")
+    print(f"  Server: {CFG.MT5_SERVER}")
+    print(f"  Symbol: {CFG.SYMBOL}")
+
     logger.event("MT5_READY", login=CFG.MT5_LOGIN, server=CFG.MT5_SERVER)
 
-    # Set global MT5 client for autonomous executor
     set_mt5_client(mt5_client)
 
-    # ==========================================
-    # AUTONOMOUS TRADER
-    # ==========================================
-    print(f"\n Iniciando Autonomous Trader...")
-    print(f"   Candle Loop: Cada {getattr(CFG, 'SCAN_INTERVAL', 300)}s")
-    print(f"   Tick Loop: Cada 100ms")
-    print(f"   Lookback: {getattr(CFG, 'LOOKBACK_CANDLES', 100)} velas")
-    
+    print(f"\nIniciando Autonomous Trader...")
+    print(f"  Candle Loop: Cada {CFG.SCAN_INTERVAL}s")
+    print(f"  Tick Loop  : Cada 100ms")
+
     trader = AutonomousTrader(
         state=BOT_STATE,
-        scan_interval=getattr(CFG, "SCAN_INTERVAL", 300),
-        timeframe=getattr(CFG, "TIMEFRAME", "H1"),
-        candles=getattr(CFG, "LOOKBACK_CANDLES", 100),
+        scan_interval=CFG.SCAN_INTERVAL,
+        timeframe="H1",
+        candles=100,
         tick_interval_ms=100,
     )
 
     logger.event("AUTONOMOUS_TRADER_INIT")
-    
-    print("\n Bot autónomo iniciado")
+
+    print("\nBot autonomo iniciado")
     print("\n" + "=" * 70)
     print("  BOT OPERANDO - Presiona Ctrl+C para detener")
     print("=" * 70)
-    print()
 
-    # ==========================================
-    # RUN AUTONOMOUS TRADER
-    # ==========================================
     try:
         await trader.run()
-    
+
     except KeyboardInterrupt:
-        print("\n\n  Deteniendo bot...")
+        print("\nDeteniendo bot...")
         logger.event("SHUTDOWN_REQUESTED")
-    
+
     except Exception as ex:
-        print(f"\n\n Error crítico: {ex}")
+        print(f"\nError critico: {ex}")
         logger.event(
             "AUTONOMOUS_ERROR",
             error=str(ex),
             traceback=traceback.format_exc(),
         )
-    
+
     finally:
-        print(" Desconectando MT5...")
+        print("Desconectando MT5...")
         mt5_client.disconnect()
-        print(" Bot detenido")
+        print("Bot detenido")
         logger.event("SHUTDOWN_COMPLETE")
 
 
@@ -120,4 +108,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n\n Adiós!")
+        print("\nAdios!")

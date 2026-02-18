@@ -2,51 +2,40 @@
 """
 Reversal Strategy - Con SUPREME MODE
 
-MODOS DE OPERACIÓN:
+MODOS DE OPERACION:
 ==================
 
-MODO BÁSICO (supreme_mode=False):
-- RSI + S/R levels  
-- Session filter básico
+MODO BASICO (supreme_mode=False):
+- RSI + S/R levels
+- Session filter basico
 - Win Rate esperado: 48-52%
 
 MODO SUPREME (supreme_mode=True):
-✅ Order Blocks detection (zonas institucionales)
-✅ Fair Value Gaps (FVG) detection
-✅ Sesión ultra-selectiva (London/NY open)
-✅ Impulse confirmation (vela >1.5x ATR)
-✅ S/R quality filter (mínimo toques)
-✅ Volume confirmation (institucional)
-✅ Multi-timeframe (opcional)
-✅ ML confidence filter (opcional)
+- Order Blocks detection (zonas institucionales)
+- Fair Value Gaps (FVG) detection
+- Sesion ultra-selectiva (London/NY open)
+- Impulse confirmation (vela >1.5x ATR)
+- S/R quality filter (minimo toques)
+- Volume confirmation (institucional)
+- Multi-timeframe (opcional)
+- ML confidence filter (opcional)
 
 Objetivo Supreme: 65-75% WR con 50-150 trades
-
-USO:
-    # Modo básico (original)
-    strategy = ReversalStrategy(symbol="XAUUSD-ECN", magic=100)
-    
-    # Modo Supreme
-    strategy = ReversalStrategy(
-        symbol="XAUUSD-ECN",
-        magic=100,
-        supreme_mode=True
-    )
 """
 from __future__ import annotations
 
 from typing import Optional, List, Dict
-import logging
+from infrastructure.logging import get_logger
 
 import pandas as pd
 import numpy as np
 
 import config as CFG
-from core.models import Signal
+from core.state import Signal
 from market.indicators import support_resistance_levels, rsi, atr, ema, sma
 from .base import BaseStrategy
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 
 
 class ReversalStrategy(BaseStrategy):

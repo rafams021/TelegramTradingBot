@@ -1,25 +1,10 @@
 # config/settings.py
 """
-Configuración centralizada del bot con validación.
-
-FASE C: Agrega MAX_OPEN_POSITIONS
-FASE AUTONOMOUS: Agrega SCAN_INTERVAL
-FASE MOMENTUM: Agrega sl_distance, tp_distances para SL/TP fijos
-FASE OPTIMIZED: Agrega SESSION_FILTER (EU+NY)
+Configuracion centralizada del bot.
 """
 from dataclasses import dataclass
 from typing import Optional
 import os
-
-
-@dataclass(frozen=True)
-class TelegramConfig:
-    api_id: int
-    api_hash: str
-    session_name: str
-    channel_id: int
-    edit_reprocess_window_s: int = 180
-    edit_reprocess_max_attempts: int = 3
 
 
 @dataclass(frozen=True)
@@ -44,15 +29,11 @@ class TradingConfig:
     sell_up_tol: float
     extra_slippage: float = 0.10
     be_buffer: float = 0.0
-    close_at_buffer: float = 0.0
-    stop_extra_buffer: float = 0.0
     max_open_positions: int = 5
     scan_interval: int = 300
-    # ── SL/TP fijos para estrategias autónomas ──
-    sl_distance: float = 6.0              # $6 desde entry
-    tp_distances: tuple = (5.0, 11.0, 16.0)  # TP1=$5, TP2=$11, TP3=$16
-    # ── Filtro de sesión (optimizado en backtest) ──
-    session_filter: str = "eu_ny"         # "24h" | "eu_ny" | "ny_only"
+    sl_distance: float = 6.0
+    tp_distances: tuple = (5.0, 11.0, 16.0)
+    session_filter: str = "eu_ny"
 
 
 @dataclass(frozen=True)
@@ -60,7 +41,6 @@ class AppConfig:
     use_real_account: bool
     dry_run: bool
     log_file: str
-    telegram: TelegramConfig
     mt5: MT5Config
     trading: TradingConfig
 
@@ -92,7 +72,7 @@ def _create_demo_trading_config() -> TradingConfig:
         scan_interval=300,
         sl_distance=6.0,
         tp_distances=(5.0, 11.0, 16.0),
-        session_filter="eu_ny",  # Optimizado: solo EU+NY (08:00-22:00 UTC)
+        session_filter="eu_ny",
     )
 
 
@@ -115,18 +95,7 @@ def _create_real_trading_config() -> TradingConfig:
         scan_interval=300,
         sl_distance=6.0,
         tp_distances=(5.0, 11.0, 16.0),
-        session_filter="eu_ny",  # Optimizado: solo EU+NY (08:00-22:00 UTC)
-    )
-
-
-def _create_telegram_config() -> TelegramConfig:
-    return TelegramConfig(
-        api_id=32919258,
-        api_hash="dfb662cee66fe7b2f337628eeac3316c",
-        session_name="tg_session_qr",
-        channel_id=2329472075,
-        edit_reprocess_window_s=180,
-        edit_reprocess_max_attempts=3,
+        session_filter="eu_ny",
     )
 
 
@@ -137,7 +106,6 @@ def create_app_config(use_real: Optional[bool] = None) -> AppConfig:
         use_real_account=use_real,
         dry_run=os.getenv("DRY_RUN", "false").lower() == "true",
         log_file=os.getenv("LOG_FILE", "bot_events.jsonl"),
-        telegram=_create_telegram_config(),
         mt5=_create_real_mt5_config() if use_real else _create_demo_mt5_config(),
         trading=_create_real_trading_config() if use_real else _create_demo_trading_config(),
     )
@@ -155,20 +123,10 @@ def set_config(config: AppConfig) -> None:
     CONFIG = config
 
 
-# =========================
 # Backward compatibility
-# =========================
-
 USE_REAL_ACCOUNT = CONFIG.use_real_account
 DRY_RUN = CONFIG.dry_run
 LOG_FILE = CONFIG.log_file
-
-API_ID = CONFIG.telegram.api_id
-API_HASH = CONFIG.telegram.api_hash
-SESSION_NAME = CONFIG.telegram.session_name
-CHANNEL_ID = CONFIG.telegram.channel_id
-TG_EDIT_REPROCESS_WINDOW_S = CONFIG.telegram.edit_reprocess_window_s
-TG_EDIT_REPROCESS_MAX_ATTEMPTS = CONFIG.telegram.edit_reprocess_max_attempts
 
 MT5_LOGIN = CONFIG.mt5.login
 MT5_PASSWORD = CONFIG.mt5.password

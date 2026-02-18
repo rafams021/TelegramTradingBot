@@ -1,7 +1,12 @@
 @echo off
 setlocal ENABLEEXTENSIONS
 
-set "LOG=%~dp0launcher.log"
+rem %~dp0 = directorio donde esta este .bat (siempre termina en \)
+set "BOT_DIR=%~dp0"
+rem Quitar la barra final
+if "%BOT_DIR:~-1%"=="\" set "BOT_DIR=%BOT_DIR:~0,-1%"
+
+set "LOG=%BOT_DIR%\launcher.log"
 echo ==== %date% %time% ==== > "%LOG%"
 
 set "BROKER=DEMO"
@@ -38,12 +43,6 @@ timeout /t 25 /nobreak >nul
 echo [3/3] Starting TelegramTradingBot...
 echo [3/3] Starting TelegramTradingBot...>>"%LOG%"
 
-if /I "%BROKER%"=="REAL" (
-    set "BOT_DIR=C:\Users\Robo\TelegramTradingBotReal"
-) else (
-    set "BOT_DIR=C:\Users\Robo\TelegramTradingBot"
-)
-
 set "BOT_MAIN=%BOT_DIR%\main.py"
 
 if not exist "%BOT_MAIN%" (
@@ -55,7 +54,6 @@ if not exist "%BOT_MAIN%" (
 )
 
 cd /d "%BOT_DIR%"
-REM CAMBIADO: Quitar redirección para ver output en consola
 python -u "%BOT_MAIN%"
 
 echo.

@@ -28,7 +28,7 @@ from typing import Optional
 import pandas as pd
 
 import config as CFG
-from core.models import Signal
+from core.state import Signal
 from market.indicators import atr
 from .base import BaseStrategy
 

@@ -1,7 +1,6 @@
 # config/__init__.py
 from .settings import (
     AppConfig,
-    TelegramConfig,
     MT5Config,
     TradingConfig,
     get_config,
@@ -11,12 +10,6 @@ from .settings import (
     USE_REAL_ACCOUNT,
     DRY_RUN,
     LOG_FILE,
-    API_ID,
-    API_HASH,
-    SESSION_NAME,
-    CHANNEL_ID,
-    TG_EDIT_REPROCESS_WINDOW_S,
-    TG_EDIT_REPROCESS_MAX_ATTEMPTS,
     MT5_LOGIN,
     MT5_PASSWORD,
     MT5_SERVER,
@@ -35,6 +28,9 @@ from .settings import (
     BE_BUFFER,
     MAX_OPEN_POSITIONS,
     SCAN_INTERVAL,
+    SL_DISTANCE,
+    TP_DISTANCES,
+    SESSION_FILTER,
 )
 
 from .constants import (
@@ -58,9 +54,15 @@ from .constants import (
 )
 
 __all__ = [
-    "AppConfig", "TelegramConfig", "MT5Config", "TradingConfig",
+    "AppConfig", "MT5Config", "TradingConfig",
     "get_config", "set_config", "create_app_config", "CONFIG",
-    "MAX_OPEN_POSITIONS", "SCAN_INTERVAL",
+    "USE_REAL_ACCOUNT", "DRY_RUN", "LOG_FILE",
+    "MT5_LOGIN", "MT5_PASSWORD", "MT5_SERVER",
+    "SYMBOL", "VOLUME_PER_ORDER", "DEVIATION", "MAGIC",
+    "HARD_DRIFT", "MAX_SPLITS", "PENDING_TIMEOUT_MIN",
+    "BUY_UP_TOL", "BUY_DOWN_TOL", "SELL_DOWN_TOL", "SELL_UP_TOL",
+    "EXTRA_SLIPPAGE", "BE_BUFFER", "MAX_OPEN_POSITIONS", "SCAN_INTERVAL",
+    "SL_DISTANCE", "TP_DISTANCES", "SESSION_FILTER",
     "MT5_RETCODE_SUCCESS", "MT5_RETCODE_INVALID_FILL",
     "COMMENT_MARKET_ORDER", "COMMENT_PENDING_ORDER",
     "COMMENT_CLOSE_ORDER", "COMMENT_MODIFY_BE", "COMMENT_MODIFY_SLTP",
