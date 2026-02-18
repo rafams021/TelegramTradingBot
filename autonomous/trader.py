@@ -18,7 +18,7 @@ import asyncio
 import time
 
 import config as CFG
-from core.executor import execute_signal_direct
+from autonomous.executor import execute_signal_direct, set_mt5_client
 from core.state import BotState, BOT_STATE
 from infrastructure.logging import get_logger
 from market import MarketAnalyzer
