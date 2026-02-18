@@ -511,7 +511,7 @@ if __name__ == "__main__":
         sma_slow=3310.0
     )
     
-    print(f"\n✅ Features extraídas: {len(features)}")
+    print(f"\n Features extraídas: {len(features)}")
     print("\nNUEVAS features (15+):")
     new_features = ['consecutive_candles', 'momentum_strength', 'higher_highs_last_10', 
                    'lower_lows_last_10', 'body_to_range_ratio', 'wick_ratio', 'pin_bar',
@@ -523,5 +523,5 @@ if __name__ == "__main__":
         if feat in features:
             print(f"  {feat:<30} = {features[feat]:.2f}")
     
-    print(f"\n✅ Feature extractor mejorado funcionando correctamente")
+    print(f"\n Feature extractor mejorado funcionando correctamente")
     print(f"Total features: {len(features)} (antes: ~30)")
